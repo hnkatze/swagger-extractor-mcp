@@ -289,6 +289,35 @@ func FormatDiffTOON(diff *types.DiffResult) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// FormatListHeaderTOON returns a metadata header for truncated list results.
+// Example: "# showing 50 of 790 — use tag/method/path_pattern filters to narrow results"
+func FormatListHeaderTOON(total, showing int, truncated bool) string {
+	if !truncated {
+		return fmt.Sprintf("# %d endpoints", total)
+	}
+	return fmt.Sprintf("# showing %d of %d — use tag/method/path_pattern filters to narrow results", showing, total)
+}
+
+// FormatListResultTOON formats endpoints with a metadata header when truncated.
+func FormatListResultTOON(result *types.ListResult) string {
+	var b strings.Builder
+	b.WriteString(FormatListHeaderTOON(result.Total, result.Showing, result.Truncated))
+	b.WriteString("\n")
+	b.WriteString(FormatEndpointsTOON(result.Endpoints))
+	return b.String()
+}
+
+// StripDescriptions removes the Description field from endpoint summaries
+// to reduce token output in list views where summary is sufficient.
+func StripDescriptions(endpoints []types.EndpointSummary) []types.EndpointSummary {
+	stripped := make([]types.EndpointSummary, len(endpoints))
+	for i, ep := range endpoints {
+		stripped[i] = ep
+		stripped[i].Description = ""
+	}
+	return stripped
+}
+
 // --- Helper functions ---
 
 // toonValue formats a single value recursively in TOON notation.

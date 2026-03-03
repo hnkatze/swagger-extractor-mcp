@@ -40,3 +40,8 @@ func FormatSchemaJSON(schema *types.SchemaDetail) (string, error) {
 func FormatDiffJSON(diff *types.DiffResult) (string, error) {
 	return FormatJSON(diff)
 }
+
+// FormatListResultJSON formats a ListResult (with truncation metadata) as JSON.
+func FormatListResultJSON(result *types.ListResult) (string, error) {
+	return FormatJSON(result)
+}

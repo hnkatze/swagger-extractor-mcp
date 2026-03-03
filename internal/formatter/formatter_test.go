@@ -561,6 +561,176 @@ func TestHasKey_NilValue(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// StripDescriptions
+// ---------------------------------------------------------------------------
+
+func TestStripDescriptions_RemovesDescription(t *testing.T) {
+	endpoints := []types.EndpointSummary{
+		{Method: "GET", Path: "/users", Summary: "List users", Description: "Returns all users in the system"},
+		{Method: "POST", Path: "/users", Summary: "Create user", Description: "Creates a new user"},
+	}
+	stripped := StripDescriptions(endpoints)
+	for i, ep := range stripped {
+		if ep.Description != "" {
+			t.Errorf("endpoint[%d] Description = %q, want empty", i, ep.Description)
+		}
+		if ep.Summary == "" {
+			t.Errorf("endpoint[%d] Summary should be preserved", i)
+		}
+		if ep.Method != endpoints[i].Method {
+			t.Errorf("endpoint[%d] Method = %q, want %q", i, ep.Method, endpoints[i].Method)
+		}
+	}
+}
+
+func TestStripDescriptions_PreservesOriginal(t *testing.T) {
+	endpoints := []types.EndpointSummary{
+		{Method: "GET", Path: "/users", Description: "original"},
+	}
+	_ = StripDescriptions(endpoints)
+	if endpoints[0].Description != "original" {
+		t.Error("StripDescriptions should not modify the original slice")
+	}
+}
+
+func TestStripDescriptions_Empty(t *testing.T) {
+	stripped := StripDescriptions(nil)
+	if len(stripped) != 0 {
+		t.Errorf("expected empty slice, got %d", len(stripped))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FormatListHeaderTOON
+// ---------------------------------------------------------------------------
+
+func TestFormatListHeaderTOON_NotTruncated(t *testing.T) {
+	header := FormatListHeaderTOON(10, 10, false)
+	if !strings.Contains(header, "10 endpoints") {
+		t.Errorf("header = %q, expected total count", header)
+	}
+	if strings.Contains(header, "showing") {
+		t.Errorf("header = %q, should not contain 'showing' when not truncated", header)
+	}
+}
+
+func TestFormatListHeaderTOON_Truncated(t *testing.T) {
+	header := FormatListHeaderTOON(790, 50, true)
+	if !strings.Contains(header, "showing 50 of 790") {
+		t.Errorf("header = %q, expected truncation info", header)
+	}
+	if !strings.Contains(header, "filters") {
+		t.Errorf("header = %q, expected filter guidance", header)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FormatListResultTOON
+// ---------------------------------------------------------------------------
+
+func TestFormatListResultTOON_WithTruncation(t *testing.T) {
+	result := &types.ListResult{
+		Total:     100,
+		Showing:   2,
+		Truncated: true,
+		Endpoints: []types.EndpointSummary{
+			{Method: "GET", Path: "/users", Summary: "List users"},
+			{Method: "POST", Path: "/users", Summary: "Create user"},
+		},
+	}
+	output := FormatListResultTOON(result)
+	if !strings.Contains(output, "showing 2 of 100") {
+		t.Errorf("output should contain truncation header, got: %s", output)
+	}
+	if !strings.Contains(output, "GET /users") {
+		t.Error("output should contain endpoint data")
+	}
+}
+
+func TestFormatListResultTOON_NoTruncation(t *testing.T) {
+	result := &types.ListResult{
+		Total:     2,
+		Showing:   2,
+		Truncated: false,
+		Endpoints: []types.EndpointSummary{
+			{Method: "GET", Path: "/pets", Summary: "List pets"},
+		},
+	}
+	output := FormatListResultTOON(result)
+	if strings.Contains(output, "showing") {
+		t.Error("output should not contain 'showing' when not truncated")
+	}
+	if !strings.Contains(output, "2 endpoints") {
+		t.Errorf("output should show total count, got: %s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FormatListResultJSON
+// ---------------------------------------------------------------------------
+
+func TestFormatListResultJSON_Valid(t *testing.T) {
+	result := &types.ListResult{
+		Total:     100,
+		Showing:   2,
+		Truncated: true,
+		Endpoints: []types.EndpointSummary{
+			{Method: "GET", Path: "/users"},
+		},
+	}
+	output, err := FormatListResultJSON(result)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed types.ListResult
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if parsed.Total != 100 {
+		t.Errorf("Total = %d, want 100", parsed.Total)
+	}
+	if parsed.Showing != 2 {
+		t.Errorf("Showing = %d, want 2", parsed.Showing)
+	}
+	if !parsed.Truncated {
+		t.Error("Truncated should be true")
+	}
+	if len(parsed.Endpoints) != 1 {
+		t.Errorf("Endpoints count = %d, want 1", len(parsed.Endpoints))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TOON list view omits description (TASK-07)
+// ---------------------------------------------------------------------------
+
+func TestFormatEndpointsTOON_OmitsDescriptionInListView(t *testing.T) {
+	endpoints := []types.EndpointSummary{
+		{
+			Method:      "GET",
+			Path:        "/users",
+			Summary:     "List users",
+			Description: "This is a long description that should NOT appear",
+			Tags:        []string{"users"},
+		},
+	}
+	// StripDescriptions + FormatEndpointsTOON should not include description
+	stripped := StripDescriptions(endpoints)
+	output := FormatEndpointsTOON(stripped)
+
+	if strings.Contains(output, "long description") {
+		t.Error("TOON list view should not contain description text")
+	}
+	if !strings.Contains(output, "List users") {
+		t.Error("TOON list view should contain summary")
+	}
+	if !strings.Contains(output, "[users]") {
+		t.Error("TOON list view should contain tags")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // min helper for Go < 1.21 compat
 // ---------------------------------------------------------------------------
 

@@ -12,11 +12,11 @@ import (
 
 const (
 	serverName    = "swagger-mcp"
-	serverVersion = "0.1.0"
+	serverVersion = "0.4.0"
 )
 
 func main() {
-	cfg := config.Default()
+	cfg := config.Load()
 
 	mcpServer := server.NewMCPServer(
 		serverName,

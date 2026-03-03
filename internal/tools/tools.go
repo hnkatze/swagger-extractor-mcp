@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -20,12 +21,14 @@ import (
 // Registry holds the shared dependencies for all tool handlers.
 type Registry struct {
 	loader *loader.Loader
+	cfg    config.Config
 }
 
 // New creates a new tool Registry with the given config.
 func New(cfg config.Config) *Registry {
 	return &Registry{
 		loader: loader.New(cfg),
+		cfg:    cfg,
 	}
 }
 
@@ -38,61 +41,64 @@ func (r *Registry) Register(s *server.MCPServer) {
 	s.AddTool(searchSpecTool(), r.handleSearchSpec)
 	s.AddTool(analyzeTagsTool(), r.handleAnalyzeTags)
 	s.AddTool(diffEndpointsTool(), r.handleDiffEndpoints)
+	s.AddTool(specStatusTool(), r.handleSpecStatus)
 }
 
 // --- Tool Definitions ---
 
 func fetchSpecTool() mcp.Tool {
 	return mcp.NewTool("fetch_spec",
-		mcp.WithDescription("Download and cache an OpenAPI/Swagger spec from a URL. Returns a summary with title, version, base URL, endpoint count, tag count, and schema count."),
+		mcp.WithDescription("Download and cache an OpenAPI/Swagger spec. Returns a compact summary (title, version, base URL, endpoint/tag/schema counts). Call this FIRST to understand the spec before querying endpoints."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec (JSON or YAML)")),
 	)
 }
 
 func listEndpointsTool() mcp.Tool {
 	return mcp.NewTool("list_endpoints",
-		mcp.WithDescription("List all endpoints in an OpenAPI spec. Optionally filter by tag, HTTP method, or path pattern."),
+		mcp.WithDescription("List endpoints from an OpenAPI spec. IMPORTANT: Use analyze_tags first to discover available tags, then filter by tag here. Results are auto-limited (default 50). Always use filters to get precise results instead of browsing all endpoints."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
-		mcp.WithString("tag", mcp.Description("Filter by tag name (case-insensitive)")),
+		mcp.WithString("tag", mcp.Description("Filter by tag name (case-insensitive). Use analyze_tags to discover tags first.")),
 		mcp.WithString("method", mcp.Description("Filter by HTTP method (GET, POST, PUT, DELETE, PATCH)")),
 		mcp.WithString("path_pattern", mcp.Description("Filter by path substring (e.g. '/users')")),
-		mcp.WithString("format", mcp.Description("Output format: json (default) or toon")),
+		mcp.WithString("limit", mcp.Description("Max results to return (default: 50, 0 = unlimited)")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
 	)
 }
 
 func getEndpointTool() mcp.Tool {
 	return mcp.NewTool("get_endpoint",
-		mcp.WithDescription("Get full details of a single endpoint including parameters, request body, responses, and resolved schemas. No $ref in output."),
+		mcp.WithDescription("Get full details of a single endpoint: parameters, request body, responses, and resolved schemas. Use this after finding the endpoint via list_endpoints or search_spec."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method (GET, POST, PUT, DELETE, PATCH)")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Endpoint path (e.g. '/pets/{petId}')")),
-		mcp.WithString("format", mcp.Description("Output format: json (default) or toon")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
 	)
 }
 
 func getSchemaTool() mcp.Tool {
 	return mcp.NewTool("get_schema",
-		mcp.WithDescription("Get a specific schema/model from the spec with all nested $refs fully resolved."),
+		mcp.WithDescription("Get a schema/model with all $refs resolved. Use when you need the data structure for a specific model."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Schema name (e.g. 'User', 'Pet')")),
-		mcp.WithString("format", mcp.Description("Output format: json (default) or toon")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
 	)
 }
 
 func searchSpecTool() mcp.Tool {
 	return mcp.NewTool("search_spec",
-		mcp.WithDescription("Full-text search across endpoint paths, summaries, descriptions, operation IDs, and parameter names."),
+		mcp.WithDescription("Search endpoints by keyword across paths, summaries, descriptions, and operation IDs. Results are ranked by relevance and auto-limited (default 50). Use specific keywords for precise results."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query (case-insensitive)")),
-		mcp.WithString("format", mcp.Description("Output format: json (default) or toon")),
+		mcp.WithString("limit", mcp.Description("Max results to return (default: 50, 0 = unlimited)")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
 	)
 }
 
 func analyzeTagsTool() mcp.Tool {
 	return mcp.NewTool("analyze_tags",
-		mcp.WithDescription("Get a summary of all tags with endpoint counts and HTTP method breakdown."),
+		mcp.WithDescription("Get all tags with endpoint counts and method breakdown. START HERE to understand the API structure, then use tag filters in list_endpoints for targeted results."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
-		mcp.WithString("format", mcp.Description("Output format: json (default) or toon")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
 	)
 }
 
@@ -103,7 +109,14 @@ func diffEndpointsTool() mcp.Tool {
 		mcp.WithString("url_new", mcp.Required(), mcp.Description("URL of the new/current spec version")),
 		mcp.WithString("path", mcp.Description("Filter diff by path substring")),
 		mcp.WithString("method", mcp.Description("Filter diff by HTTP method")),
-		mcp.WithString("format", mcp.Description("Output format: json (default) or toon")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+	)
+}
+
+func specStatusTool() mcp.Tool {
+	return mcp.NewTool("spec_status",
+		mcp.WithDescription("Check cache status of a spec without fetching. Returns cache source, fingerprint, age, and disk stats."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec to check")),
 	)
 }
 
@@ -119,12 +132,32 @@ func getStringArg(req mcp.CallToolRequest, name string) string {
 	return ""
 }
 
-func getFormat(req mcp.CallToolRequest) types.OutputFormat {
+// getFormat returns the output format from the request, falling back to config default.
+func (r *Registry) getFormat(req mcp.CallToolRequest) types.OutputFormat {
 	f := strings.ToLower(getStringArg(req, "format"))
-	if f == "toon" {
+	switch f {
+	case "toon":
+		return types.FormatTOON
+	case "json":
+		return types.FormatJSON
+	default:
+		// Fall back to config default
+		if strings.ToLower(r.cfg.DefaultFormat) == "json" {
+			return types.FormatJSON
+		}
 		return types.FormatTOON
 	}
-	return types.FormatJSON
+}
+
+// getLimit returns the result limit from the request, falling back to config default.
+func (r *Registry) getLimit(req mcp.CallToolRequest) int {
+	s := getStringArg(req, "limit")
+	if s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			return n
+		}
+	}
+	return r.cfg.DefaultLimit
 }
 
 func (r *Registry) loadSpec(ctx context.Context, url string) (*openapi3.T, error) {
@@ -173,14 +206,37 @@ func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequ
 	pathPattern := getStringArg(req, "path_pattern")
 
 	endpoints := analyzer.ListEndpoints(doc, tag, method, pathPattern)
-	format := getFormat(req)
+
+	// Apply limit with truncation metadata
+	total := len(endpoints)
+	limit := r.getLimit(req)
+	truncated := false
+	if limit > 0 && total > limit {
+		endpoints = endpoints[:limit]
+		truncated = true
+	}
+
+	format := r.getFormat(req)
 
 	var output string
 	if format == types.FormatTOON {
-		output = formatter.FormatEndpointsTOON(endpoints)
+		stripped := formatter.StripDescriptions(endpoints)
+		result := &types.ListResult{
+			Total:     total,
+			Showing:   len(stripped),
+			Truncated: truncated,
+			Endpoints: stripped,
+		}
+		output = formatter.FormatListResultTOON(result)
 	} else {
+		result := &types.ListResult{
+			Total:     total,
+			Showing:   len(endpoints),
+			Truncated: truncated,
+			Endpoints: endpoints,
+		}
 		var fmtErr error
-		output, fmtErr = formatter.FormatEndpointsJSON(endpoints)
+		output, fmtErr = formatter.FormatListResultJSON(result)
 		if fmtErr != nil {
 			return toolError(types.ErrInternalError, fmtErr.Error()), nil
 		}
@@ -211,7 +267,7 @@ func (r *Registry) handleGetEndpoint(ctx context.Context, req mcp.CallToolReques
 		return toolError(types.ErrEndpointNotFound, fmt.Sprintf("%s %s not found", strings.ToUpper(method), path)), nil
 	}
 
-	format := getFormat(req)
+	format := r.getFormat(req)
 	var output string
 	if format == types.FormatTOON {
 		output = formatter.FormatEndpointTOON(detail)
@@ -247,7 +303,7 @@ func (r *Registry) handleGetSchema(ctx context.Context, req mcp.CallToolRequest)
 		return toolError(types.ErrSchemaNotFound, fmt.Sprintf("schema '%s' not found", name)), nil
 	}
 
-	format := getFormat(req)
+	format := r.getFormat(req)
 	var output string
 	if format == types.FormatTOON {
 		output = formatter.FormatSchemaTOON(schema)
@@ -279,21 +335,44 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 	}
 
 	results := analyzer.SearchSpec(doc, query)
-	format := getFormat(req)
+
+	if len(results) == 0 {
+		return mcp.NewToolResultText("No endpoints found matching query: " + query), nil
+	}
+
+	// Apply limit with truncation metadata
+	total := len(results)
+	limit := r.getLimit(req)
+	truncated := false
+	if limit > 0 && total > limit {
+		results = results[:limit]
+		truncated = true
+	}
+
+	format := r.getFormat(req)
 
 	var output string
 	if format == types.FormatTOON {
-		output = formatter.FormatEndpointsTOON(results)
+		stripped := formatter.StripDescriptions(results)
+		result := &types.ListResult{
+			Total:     total,
+			Showing:   len(stripped),
+			Truncated: truncated,
+			Endpoints: stripped,
+		}
+		output = formatter.FormatListResultTOON(result)
 	} else {
+		result := &types.ListResult{
+			Total:     total,
+			Showing:   len(results),
+			Truncated: truncated,
+			Endpoints: results,
+		}
 		var fmtErr error
-		output, fmtErr = formatter.FormatEndpointsJSON(results)
+		output, fmtErr = formatter.FormatListResultJSON(result)
 		if fmtErr != nil {
 			return toolError(types.ErrInternalError, fmtErr.Error()), nil
 		}
-	}
-
-	if output == "" || output == "null" || output == "[]" {
-		return mcp.NewToolResultText("No endpoints found matching query: " + query), nil
 	}
 
 	return mcp.NewToolResultText(output), nil
@@ -311,7 +390,7 @@ func (r *Registry) handleAnalyzeTags(ctx context.Context, req mcp.CallToolReques
 	}
 
 	tags := analyzer.AnalyzeTags(doc)
-	format := getFormat(req)
+	format := r.getFormat(req)
 
 	var output string
 	if format == types.FormatTOON {
@@ -348,7 +427,7 @@ func (r *Registry) handleDiffEndpoints(ctx context.Context, req mcp.CallToolRequ
 	filterMethod := getStringArg(req, "method")
 
 	diff := analyzer.DiffSpecs(oldDoc, newDoc, filterPath, filterMethod)
-	format := getFormat(req)
+	format := r.getFormat(req)
 
 	var output string
 	if format == types.FormatTOON {
@@ -363,6 +442,22 @@ func (r *Registry) handleDiffEndpoints(ctx context.Context, req mcp.CallToolRequ
 
 	if output == "" {
 		return mcp.NewToolResultText("No differences found between the two specs."), nil
+	}
+
+	return mcp.NewToolResultText(output), nil
+}
+
+func (r *Registry) handleSpecStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	url := getStringArg(req, "url")
+	if url == "" {
+		return toolError(types.ErrInvalidURL, "url is required"), nil
+	}
+
+	status := r.loader.SpecStatus(url)
+
+	output, err := formatter.FormatJSON(status)
+	if err != nil {
+		return toolError(types.ErrInternalError, err.Error()), nil
 	}
 
 	return mcp.NewToolResultText(output), nil
