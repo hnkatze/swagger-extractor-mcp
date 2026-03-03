@@ -72,6 +72,14 @@ type SchemaDetail struct {
 	Schema     interface{} `json:"schema"`
 }
 
+// ListResult wraps a list of endpoints with truncation metadata.
+type ListResult struct {
+	Total     int               `json:"total"`
+	Showing   int               `json:"showing"`
+	Truncated bool              `json:"truncated"`
+	Endpoints []EndpointSummary `json:"endpoints"`
+}
+
 // TagSummary represents tag analysis info.
 type TagSummary struct {
 	Name           string         `json:"name"`
@@ -99,6 +107,39 @@ type CacheEntry struct {
 	URL       string
 	FetchedAt time.Time
 	Summary   SpecSummary
+}
+
+// DiskCacheMeta holds metadata for a disk-cached spec entry.
+type DiskCacheMeta struct {
+	URL          string      `json:"url"`
+	ETag         string      `json:"etag,omitempty"`
+	LastModified string      `json:"last_modified,omitempty"`
+	Fingerprint  string      `json:"fingerprint"`
+	FetchedAt    time.Time   `json:"fetched_at"`
+	SpecSize     int64       `json:"spec_size"`
+	Summary      SpecSummary `json:"summary"`
+}
+
+// DiskStats holds disk cache usage statistics.
+type DiskStats struct {
+	EntryCount int    `json:"entry_count"`
+	TotalBytes int64  `json:"total_bytes"`
+	CacheDir   string `json:"cache_dir"`
+}
+
+// SpecStatus holds the full status of a cached spec.
+type SpecStatus struct {
+	URL              string       `json:"url"`
+	Cached           bool         `json:"cached"`
+	Source           string       `json:"source"`
+	Fingerprint      string       `json:"fingerprint,omitempty"`
+	FetchedAt        *time.Time   `json:"fetched_at,omitempty"`
+	AgeSeconds       int64        `json:"age_seconds,omitempty"`
+	ETag             string       `json:"etag,omitempty"`
+	LastModified     string       `json:"last_modified,omitempty"`
+	Summary          *SpecSummary `json:"summary,omitempty"`
+	DiskStats        *DiskStats   `json:"disk_stats,omitempty"`
+	DiskCacheEnabled bool         `json:"disk_cache_enabled"`
 }
 
 // ToolError is a structured error response that implements the error interface.
@@ -130,6 +171,7 @@ const (
 	ErrInvalidFormat       = "INVALID_FORMAT"
 	ErrFetchFailed         = "FETCH_FAILED"
 	ErrInternalError       = "INTERNAL_ERROR"
+	ErrCacheError          = "CACHE_ERROR"
 )
 
 // OutputFormat for formatter selection.
