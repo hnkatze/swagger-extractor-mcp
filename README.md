@@ -40,7 +40,7 @@ Every tool accepts an optional `format` parameter: `json` (default) or `toon`.
 ### Option 1: Go Install (requires Go 1.25+)
 
 ```bash
-go install github.com/hnkatze/swagger-mcp-go/cmd/server@latest
+go install github.com/hnkatze/swagger-mcp-go/cmd/swagger-mcp@latest
 ```
 
 The binary will be placed in `$GOPATH/bin` (usually `~/go/bin`). Make sure it's on your `PATH`.
@@ -63,7 +63,7 @@ sudo mv swagger-mcp /usr/local/bin/
 ```bash
 git clone https://github.com/hnkatze/swagger-extractor-mcp.git
 cd swagger-extractor-mcp
-go build -o swagger-mcp ./cmd/server/
+go build -o swagger-mcp ./cmd/swagger-mcp/
 ```
 
 ## Configuration
@@ -220,10 +220,10 @@ internal/
 
 ```bash
 # Run locally
-go run ./cmd/server/
+go run ./cmd/swagger-mcp/
 
 # Build
-go build -o swagger-mcp ./cmd/server/
+go build -o swagger-mcp ./cmd/swagger-mcp/
 
 # Run tests
 go test ./...

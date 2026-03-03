@@ -3,7 +3,7 @@ version: 2
 project_name: swagger-mcp
 
 builds:
-  - main: ./cmd/server/
+  - main: ./cmd/swagger-mcp/
     binary: swagger-mcp
     env:
       - CGO_ENABLED=0

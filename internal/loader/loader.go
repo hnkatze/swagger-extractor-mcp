@@ -98,12 +98,15 @@ func (l *Loader) LoadFromURL(ctx context.Context, rawURL string) (*openapi3.T, *
 		return nil, nil, err
 	}
 
-	// Validate
-	if err := doc.Validate(ctx); err != nil {
-		return nil, nil, &types.ToolError{
-			Code:    types.ErrInvalidSpec,
-			Message: "spec validation failed",
-			Details: err.Error(),
+	// Validate — skip for Swagger 2.0 specs converted to v3 by kin-openapi,
+	// as the conversion may leave the openapi field empty which fails strict validation.
+	if doc.OpenAPI != "" {
+		if err := doc.Validate(ctx); err != nil {
+			return nil, nil, &types.ToolError{
+				Code:    types.ErrInvalidSpec,
+				Message: "spec validation failed",
+				Details: err.Error(),
+			}
 		}
 	}
 
