@@ -88,7 +88,7 @@ func (l *Loader) promoteFromDisk(ctx context.Context, normalized string, specDat
 
 	// Validate — skip for Swagger 2.0 specs converted to v3
 	if doc.OpenAPI != "" {
-		if err := doc.Validate(ctx); err != nil {
+		if err := doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation()); err != nil {
 			return nil, nil, &types.ToolError{
 				Code:    types.ErrInvalidSpec,
 				Message: "spec validation failed",
@@ -160,7 +160,7 @@ func (l *Loader) conditionalFetch(ctx context.Context, normalized string, diskDa
 
 		// Validate — skip for Swagger 2.0 specs
 		if doc.OpenAPI != "" {
-			if err := doc.Validate(ctx); err != nil {
+			if err := doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation()); err != nil {
 				return nil, nil, &types.ToolError{
 					Code:    types.ErrInvalidSpec,
 					Message: "spec validation failed",
@@ -271,8 +271,10 @@ func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*ope
 
 	// Validate — skip for Swagger 2.0 specs converted to v3 by kin-openapi,
 	// as the conversion may leave the openapi field empty which fails strict validation.
+	// DisableExamplesValidation: specs often have examples with extra properties
+	// DisableSchemaDefaultsValidation: specs often have defaults with wrong types (e.g. "1" instead of 1)
 	if doc.OpenAPI != "" {
-		if err := doc.Validate(ctx); err != nil {
+		if err := doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation()); err != nil {
 			return nil, nil, &types.ToolError{
 				Code:    types.ErrInvalidSpec,
 				Message: "spec validation failed",
