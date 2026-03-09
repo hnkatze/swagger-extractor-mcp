@@ -129,6 +129,33 @@ func FormatEndpointTOON(detail *types.EndpointDetail) string {
 				b.WriteString(r.Description)
 			}
 			b.WriteString("\n")
+			if len(r.Headers) > 0 {
+				b.WriteString("    headers:\n")
+				for _, h := range r.Headers {
+					b.WriteString("      - ")
+					b.WriteString(h.Name)
+					reqStr := "optional"
+					if h.Required {
+						reqStr = "required"
+					}
+					b.WriteString(" (")
+					b.WriteString(reqStr)
+					b.WriteString(")")
+					schemaType := extractSchemaType(h.Schema)
+					if schemaType != "" {
+						b.WriteString(": ")
+						b.WriteString(schemaType)
+					}
+					if h.Description != "" {
+						b.WriteString(" — ")
+						b.WriteString(h.Description)
+					}
+					if h.Deprecated {
+						b.WriteString(" (deprecated)")
+					}
+					b.WriteString("\n")
+				}
+			}
 			for contentType, media := range r.Content {
 				b.WriteString("    ")
 				b.WriteString(contentType)

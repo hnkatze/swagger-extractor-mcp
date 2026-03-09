@@ -28,7 +28,7 @@ func loadTestDoc(t *testing.T) *openapi3.T {
 
 func TestGetEndpoint_ListPets(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetEndpoint(doc, "GET", "/pets")
+	detail, err := GetEndpoint(doc, "GET", "/pets", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestGetEndpoint_ListPets(t *testing.T) {
 
 func TestGetEndpoint_CreatePet(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetEndpoint(doc, "POST", "/pets")
+	detail, err := GetEndpoint(doc, "POST", "/pets", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestGetEndpoint_CreatePet(t *testing.T) {
 
 func TestGetEndpoint_GetPet(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetEndpoint(doc, "GET", "/pets/{petId}")
+	detail, err := GetEndpoint(doc, "GET", "/pets/{petId}", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestGetEndpoint_GetPet(t *testing.T) {
 
 func TestGetEndpoint_DeletePet(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetEndpoint(doc, "DELETE", "/pets/{petId}")
+	detail, err := GetEndpoint(doc, "DELETE", "/pets/{petId}", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestGetEndpoint_DeletePet(t *testing.T) {
 
 func TestGetEndpoint_NotFound(t *testing.T) {
 	doc := loadTestDoc(t)
-	_, err := GetEndpoint(doc, "GET", "/nonexistent")
+	_, err := GetEndpoint(doc, "GET", "/nonexistent", -1)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -154,7 +154,7 @@ func TestGetEndpoint_NotFound(t *testing.T) {
 
 func TestGetEndpoint_WrongMethod(t *testing.T) {
 	doc := loadTestDoc(t)
-	_, err := GetEndpoint(doc, "PUT", "/pets")
+	_, err := GetEndpoint(doc, "PUT", "/pets", -1)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -164,7 +164,7 @@ func TestGetEndpoint_WrongMethod(t *testing.T) {
 }
 
 func TestGetEndpoint_NilDoc(t *testing.T) {
-	_, err := GetEndpoint(nil, "GET", "/pets")
+	_, err := GetEndpoint(nil, "GET", "/pets", -1)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -175,7 +175,7 @@ func TestGetEndpoint_NilDoc(t *testing.T) {
 
 func TestGetEndpoint_CaseInsensitive(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetEndpoint(doc, "get", "/pets")
+	detail, err := GetEndpoint(doc, "get", "/pets", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestGetEndpoint_CaseInsensitive(t *testing.T) {
 
 func TestGetSchema_Pet(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetSchema(doc, "Pet")
+	detail, err := GetSchema(doc, "Pet", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestGetSchema_Pet(t *testing.T) {
 
 func TestGetSchema_Error(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetSchema(doc, "Error")
+	detail, err := GetSchema(doc, "Error", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestGetSchema_Error(t *testing.T) {
 
 func TestGetSchema_Owner(t *testing.T) {
 	doc := loadTestDoc(t)
-	detail, err := GetSchema(doc, "Owner")
+	detail, err := GetSchema(doc, "Owner", -1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestGetSchema_Owner(t *testing.T) {
 
 func TestGetSchema_NotFound(t *testing.T) {
 	doc := loadTestDoc(t)
-	_, err := GetSchema(doc, "NonExistent")
+	_, err := GetSchema(doc, "NonExistent", -1)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -289,7 +289,7 @@ func TestGetSchema_NotFound(t *testing.T) {
 }
 
 func TestGetSchema_NilDoc(t *testing.T) {
-	_, err := GetSchema(nil, "Pet")
+	_, err := GetSchema(nil, "Pet", -1)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -309,7 +309,7 @@ func TestResolveSchema_SimpleString(t *testing.T) {
 		},
 	}
 
-	result := resolveSchema(schema, 0)
+	result := resolveSchema(schema, 0, defaultMaxDepth)
 	m, ok := result.(map[string]interface{})
 	if !ok {
 		t.Fatalf("result is %T, want map[string]interface{}", result)
@@ -327,7 +327,7 @@ func TestResolveSchema_WithFormat(t *testing.T) {
 		},
 	}
 
-	result := resolveSchema(schema, 0)
+	result := resolveSchema(schema, 0, defaultMaxDepth)
 	m, ok := result.(map[string]interface{})
 	if !ok {
 		t.Fatalf("result is %T, want map[string]interface{}", result)
@@ -341,7 +341,7 @@ func TestResolveSchema_WithFormat(t *testing.T) {
 }
 
 func TestResolveSchema_Nil(t *testing.T) {
-	result := resolveSchema(nil, 0)
+	result := resolveSchema(nil, 0, defaultMaxDepth)
 	if result != nil {
 		t.Errorf("result = %v, want nil", result)
 	}
@@ -355,7 +355,7 @@ func TestResolveSchema_DepthLimit(t *testing.T) {
 		},
 	}
 
-	result := resolveSchema(schema, 10)
+	result := resolveSchema(schema, 10, defaultMaxDepth)
 	m, ok := result.(map[string]interface{})
 	if !ok {
 		t.Fatalf("result is %T, want map[string]interface{}", result)

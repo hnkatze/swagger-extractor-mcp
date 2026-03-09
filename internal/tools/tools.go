@@ -75,6 +75,7 @@ func getEndpointTool() mcp.Tool {
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method (GET, POST, PUT, DELETE, PATCH)")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Endpoint path (e.g. '/pets/{petId}')")),
+		mcp.WithString("resolve_depth", mcp.Description("Max schema resolution depth (0-10). Default: 10. Lower values reduce output tokens for complex schemas. 0 = no resolution.")),
 		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
 	)
 }
@@ -84,6 +85,7 @@ func getSchemaTool() mcp.Tool {
 		mcp.WithDescription("Get a schema/model with all $refs resolved. Use when you need the data structure for a specific model."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Schema name (e.g. 'User', 'Pet')")),
+		mcp.WithString("resolve_depth", mcp.Description("Max schema resolution depth (0-10). Default: 10. Lower values reduce output tokens for complex schemas. 0 = no resolution.")),
 		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
 	)
 }
@@ -199,6 +201,19 @@ func (r *Registry) getLimit(req mcp.CallToolRequest) int {
 		}
 	}
 	return r.cfg.DefaultLimit
+}
+
+// getResolveDepth returns the schema resolution depth from the request.
+// Returns -1 if not provided (meaning use default), or 0-10 for explicit values.
+func getResolveDepth(req mcp.CallToolRequest) int {
+	s := getStringArg(req, "resolve_depth")
+	if s == "" {
+		return -1 // not provided, use default
+	}
+	if n, err := strconv.Atoi(s); err == nil && n >= 0 && n <= 10 {
+		return n
+	}
+	return -1 // invalid value, use default
 }
 
 func (r *Registry) loadSpec(ctx context.Context, url string) (*openapi3.T, error) {
@@ -317,7 +332,8 @@ func (r *Registry) handleGetEndpoint(ctx context.Context, req mcp.CallToolReques
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
 
-	detail, err := extractor.GetEndpoint(doc, method, path)
+	resolveDepth := getResolveDepth(req)
+	detail, err := extractor.GetEndpoint(doc, method, path, resolveDepth)
 	if err != nil {
 		return toolError(types.ErrEndpointNotFound, fmt.Sprintf("%s %s not found", strings.ToUpper(method), path)), nil
 	}
@@ -353,7 +369,8 @@ func (r *Registry) handleGetSchema(ctx context.Context, req mcp.CallToolRequest)
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
 
-	schema, err := extractor.GetSchema(doc, name)
+	resolveDepth := getResolveDepth(req)
+	schema, err := extractor.GetSchema(doc, name, resolveDepth)
 	if err != nil {
 		return toolError(types.ErrSchemaNotFound, fmt.Sprintf("schema '%s' not found", name)), nil
 	}

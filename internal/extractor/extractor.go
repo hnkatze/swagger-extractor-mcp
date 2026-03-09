@@ -9,13 +9,25 @@ import (
 	"github.com/hnkatze/swagger-mcp-go/internal/types"
 )
 
+const defaultMaxDepth = 10
+
 var (
 	ErrEndpointNotFound = errors.New(types.ErrEndpointNotFound)
 	ErrSchemaNotFound   = errors.New(types.ErrSchemaNotFound)
 )
 
+// effectiveMaxDepth returns the max depth to use for schema resolution.
+// resolveDepth < 0 means use default (10), 0 means no resolution, 1-10 means use that value.
+func effectiveMaxDepth(resolveDepth int) int {
+	if resolveDepth < 0 {
+		return defaultMaxDepth
+	}
+	return resolveDepth
+}
+
 // GetEndpoint returns the full detail for a single endpoint.
-func GetEndpoint(doc *openapi3.T, method string, path string) (*types.EndpointDetail, error) {
+// resolveDepth controls schema resolution depth: <0 = default (10), 0 = no resolution, 1-10 = use that value.
+func GetEndpoint(doc *openapi3.T, method, path string, resolveDepth int) (*types.EndpointDetail, error) {
 	if doc == nil || doc.Paths == nil {
 		return nil, ErrEndpointNotFound
 	}
@@ -30,6 +42,8 @@ func GetEndpoint(doc *openapi3.T, method string, path string) (*types.EndpointDe
 		return nil, ErrEndpointNotFound
 	}
 
+	maxDepth := effectiveMaxDepth(resolveDepth)
+
 	detail := &types.EndpointDetail{
 		Method:      strings.ToUpper(method),
 		Path:        path,
@@ -41,16 +55,16 @@ func GetEndpoint(doc *openapi3.T, method string, path string) (*types.EndpointDe
 	}
 
 	// Collect parameters from both path-level and operation-level
-	detail.Parameters = extractParameters(pathItem.Parameters, op.Parameters)
+	detail.Parameters = extractParameters(pathItem.Parameters, op.Parameters, maxDepth)
 
 	// Extract request body
 	if op.RequestBody != nil && op.RequestBody.Value != nil {
-		detail.RequestBody = extractRequestBody(op.RequestBody.Value)
+		detail.RequestBody = extractRequestBody(op.RequestBody.Value, maxDepth)
 	}
 
 	// Extract responses
 	if op.Responses != nil {
-		detail.Responses = extractResponses(op.Responses)
+		detail.Responses = extractResponses(op.Responses, maxDepth)
 	}
 
 	// Extract security
@@ -66,7 +80,8 @@ func GetEndpoint(doc *openapi3.T, method string, path string) (*types.EndpointDe
 }
 
 // GetSchema returns the resolved detail for a named schema from components.
-func GetSchema(doc *openapi3.T, name string) (*types.SchemaDetail, error) {
+// resolveDepth controls schema resolution depth: <0 = default (10), 0 = no resolution, 1-10 = use that value.
+func GetSchema(doc *openapi3.T, name string, resolveDepth int) (*types.SchemaDetail, error) {
 	if doc == nil || doc.Components == nil || doc.Components.Schemas == nil {
 		return nil, ErrSchemaNotFound
 	}
@@ -76,7 +91,8 @@ func GetSchema(doc *openapi3.T, name string) (*types.SchemaDetail, error) {
 		return nil, ErrSchemaNotFound
 	}
 
-	resolved := resolveSchema(schemaRef, 0)
+	maxDepth := effectiveMaxDepth(resolveDepth)
+	resolved := resolveSchema(schemaRef, 0, maxDepth)
 	return &types.SchemaDetail{
 		Name:   name,
 		Schema: resolved,
@@ -106,7 +122,7 @@ func getOperationByMethod(item *openapi3.PathItem, method string) *openapi3.Oper
 }
 
 // extractParameters merges path-level and operation-level parameters.
-func extractParameters(pathParams openapi3.Parameters, opParams openapi3.Parameters) []types.ParameterDetail {
+func extractParameters(pathParams openapi3.Parameters, opParams openapi3.Parameters, maxDepth int) []types.ParameterDetail {
 	// Use a map to allow operation-level params to override path-level ones
 	seen := make(map[string]types.ParameterDetail)
 	var order []string
@@ -125,7 +141,7 @@ func extractParameters(pathParams openapi3.Parameters, opParams openapi3.Paramet
 				Description: p.Description,
 			}
 			if p.Schema != nil {
-				pd.Schema = resolveSchema(p.Schema, 0)
+				pd.Schema = resolveSchema(p.Schema, 0, maxDepth)
 			}
 			if _, exists := seen[key]; !exists {
 				order = append(order, key)
@@ -145,7 +161,7 @@ func extractParameters(pathParams openapi3.Parameters, opParams openapi3.Paramet
 }
 
 // extractRequestBody converts an openapi3.RequestBody to types.RequestBodyDetail.
-func extractRequestBody(rb *openapi3.RequestBody) *types.RequestBodyDetail {
+func extractRequestBody(rb *openapi3.RequestBody, maxDepth int) *types.RequestBodyDetail {
 	detail := &types.RequestBodyDetail{
 		Required:    rb.Required,
 		Description: rb.Description,
@@ -158,7 +174,7 @@ func extractRequestBody(rb *openapi3.RequestBody) *types.RequestBodyDetail {
 			}
 			md := types.MediaDetail{}
 			if mt.Schema != nil {
-				md.Schema = resolveSchema(mt.Schema, 0)
+				md.Schema = resolveSchema(mt.Schema, 0, maxDepth)
 			}
 			content[mediaType] = md
 		}
@@ -168,7 +184,7 @@ func extractRequestBody(rb *openapi3.RequestBody) *types.RequestBodyDetail {
 }
 
 // extractResponses converts an openapi3.Responses to a sorted slice of ResponseDetail.
-func extractResponses(responses *openapi3.Responses) []types.ResponseDetail {
+func extractResponses(responses *openapi3.Responses, maxDepth int) []types.ResponseDetail {
 	respMap := responses.Map()
 	codes := make([]string, 0, len(respMap))
 	for code := range respMap {
@@ -189,6 +205,7 @@ func extractResponses(responses *openapi3.Responses) []types.ResponseDetail {
 		if resp.Description != nil {
 			rd.Description = *resp.Description
 		}
+		rd.Headers = extractHeaders(resp.Headers, maxDepth)
 		if resp.Content != nil {
 			content := make(map[string]types.MediaDetail, len(resp.Content))
 			for mediaType, mt := range resp.Content {
@@ -197,7 +214,7 @@ func extractResponses(responses *openapi3.Responses) []types.ResponseDetail {
 				}
 				md := types.MediaDetail{}
 				if mt.Schema != nil {
-					md.Schema = resolveSchema(mt.Schema, 0)
+					md.Schema = resolveSchema(mt.Schema, 0, maxDepth)
 				}
 				content[mediaType] = md
 			}
@@ -208,14 +225,44 @@ func extractResponses(responses *openapi3.Responses) []types.ResponseDetail {
 	return results
 }
 
+// extractHeaders converts openapi3.Headers to a sorted slice of HeaderDetail.
+func extractHeaders(headers openapi3.Headers, maxDepth int) []types.HeaderDetail {
+	if len(headers) == 0 {
+		return nil
+	}
+
+	results := make([]types.HeaderDetail, 0, len(headers))
+	for name, ref := range headers {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		h := ref.Value
+		hd := types.HeaderDetail{
+			Name:        name,
+			Description: h.Description,
+			Required:    h.Required,
+			Deprecated:  h.Deprecated,
+		}
+		if h.Schema != nil {
+			hd.Schema = resolveSchema(h.Schema, 0, maxDepth)
+		}
+		results = append(results, hd)
+	}
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Name < results[j].Name
+	})
+
+	return results
+}
+
 // resolveSchema recursively converts a SchemaRef into a clean map representation.
-func resolveSchema(schema *openapi3.SchemaRef, depth int) interface{} {
+func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int) interface{} {
 	if schema == nil {
 		return nil
 	}
 
 	// Prevent infinite loops from circular references
-	const maxDepth = 10
 	if depth >= maxDepth {
 		refName := schema.Ref
 		if refName == "" {
@@ -269,26 +316,26 @@ func resolveSchema(schema *openapi3.SchemaRef, depth int) interface{} {
 	if s.Properties != nil && len(s.Properties) > 0 {
 		props := make(map[string]interface{}, len(s.Properties))
 		for name, propRef := range s.Properties {
-			props[name] = resolveSchema(propRef, depth+1)
+			props[name] = resolveSchema(propRef, depth+1, maxDepth)
 		}
 		result["properties"] = props
 	}
 
 	// Items (array type)
 	if s.Items != nil {
-		result["items"] = resolveSchema(s.Items, depth+1)
+		result["items"] = resolveSchema(s.Items, depth+1, maxDepth)
 	}
 
 	// AdditionalProperties
 	if s.AdditionalProperties.Schema != nil {
-		result["additionalProperties"] = resolveSchema(s.AdditionalProperties.Schema, depth+1)
+		result["additionalProperties"] = resolveSchema(s.AdditionalProperties.Schema, depth+1, maxDepth)
 	}
 
 	// OneOf
 	if len(s.OneOf) > 0 {
 		oneOf := make([]interface{}, len(s.OneOf))
 		for i, ref := range s.OneOf {
-			oneOf[i] = resolveSchema(ref, depth+1)
+			oneOf[i] = resolveSchema(ref, depth+1, maxDepth)
 		}
 		result["oneOf"] = oneOf
 	}
@@ -297,7 +344,7 @@ func resolveSchema(schema *openapi3.SchemaRef, depth int) interface{} {
 	if len(s.AnyOf) > 0 {
 		anyOf := make([]interface{}, len(s.AnyOf))
 		for i, ref := range s.AnyOf {
-			anyOf[i] = resolveSchema(ref, depth+1)
+			anyOf[i] = resolveSchema(ref, depth+1, maxDepth)
 		}
 		result["anyOf"] = anyOf
 	}
@@ -306,7 +353,7 @@ func resolveSchema(schema *openapi3.SchemaRef, depth int) interface{} {
 	if len(s.AllOf) > 0 {
 		allOf := make([]interface{}, len(s.AllOf))
 		for i, ref := range s.AllOf {
-			allOf[i] = resolveSchema(ref, depth+1)
+			allOf[i] = resolveSchema(ref, depth+1, maxDepth)
 		}
 		result["allOf"] = allOf
 	}

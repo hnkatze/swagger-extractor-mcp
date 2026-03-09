@@ -57,6 +57,18 @@
         "responses": {
           "201": {
             "description": "Pet created",
+            "headers": {
+              "X-RateLimit-Remaining": {
+                "description": "Remaining requests in the current window",
+                "required": false,
+                "schema": { "type": "integer" }
+              },
+              "Location": {
+                "description": "URL of the created resource",
+                "required": true,
+                "schema": { "type": "string", "format": "uri" }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Pet" }

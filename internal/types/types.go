@@ -60,10 +60,20 @@ type MediaDetail struct {
 	Schema interface{} `json:"schema"`
 }
 
+// HeaderDetail represents a single response header.
+type HeaderDetail struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	Required    bool        `json:"required,omitempty"`
+	Deprecated  bool        `json:"deprecated,omitempty"`
+	Schema      interface{} `json:"schema,omitempty"`
+}
+
 // ResponseDetail represents a single response.
 type ResponseDetail struct {
 	StatusCode  string                 `json:"status_code"`
 	Description string                 `json:"description,omitempty"`
+	Headers     []HeaderDetail         `json:"headers,omitempty"`
 	Content     map[string]MediaDetail `json:"content,omitempty"`
 }
 
