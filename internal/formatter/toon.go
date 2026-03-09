@@ -36,6 +36,12 @@ func FormatEndpointTOON(detail *types.EndpointDetail) string {
 	b.WriteString(detail.Path)
 	b.WriteString("\n")
 
+	if detail.OperationID != "" {
+		b.WriteString("operationId: ")
+		b.WriteString(detail.OperationID)
+		b.WriteString("\n")
+	}
+
 	if detail.Summary != "" {
 		b.WriteString("summary: ")
 		b.WriteString(toonString(detail.Summary))

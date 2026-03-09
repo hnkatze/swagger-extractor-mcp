@@ -33,6 +33,7 @@ func GetEndpoint(doc *openapi3.T, method string, path string) (*types.EndpointDe
 	detail := &types.EndpointDetail{
 		Method:      strings.ToUpper(method),
 		Path:        path,
+		OperationID: op.OperationID,
 		Summary:     op.Summary,
 		Description: op.Description,
 		Tags:        op.Tags,

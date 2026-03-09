@@ -28,6 +28,7 @@ type EndpointSummary struct {
 type EndpointDetail struct {
 	Method      string              `json:"method"`
 	Path        string              `json:"path"`
+	OperationID string              `json:"operation_id,omitempty"`
 	Summary     string              `json:"summary,omitempty"`
 	Description string              `json:"description,omitempty"`
 	Tags        []string            `json:"tags,omitempty"`
