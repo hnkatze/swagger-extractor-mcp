@@ -26,14 +26,16 @@ All output is **token-optimized by default** using TOON format (~40% fewer token
 
 | Tool | Description |
 |------|-------------|
-| `fetch_spec` | Download and cache a spec. Returns title, version, endpoint/tag/schema counts. |
+| `fetch_spec` | Download and cache a spec. Returns title, version, endpoint/tag/schema counts. Supports `refresh=true`. |
 | `analyze_tags` | Tag summary with endpoint counts and method breakdown. **Start here** to understand the API. |
 | `list_endpoints` | List endpoints with filters (tag, method, path pattern). Auto-limited to 50 results. |
 | `get_endpoint` | Full detail for one endpoint — params, request body, responses, resolved schemas. |
 | `get_schema` | Get a named schema with all nested `$ref` fully resolved. |
-| `search_spec` | Full-text search across paths, summaries, operation IDs, and parameters. Auto-limited to 50. |
+| `search_spec` | Full-text search across paths, summaries, operation IDs, parameters, and body properties. Auto-limited to 50. |
 | `diff_endpoints` | Compare two spec versions. Shows added, removed, and changed endpoints. |
 | `spec_status` | Check cache status (memory/disk), fingerprint, age, ETag. No HTTP requests. |
+| `refresh_spec` | Force-refresh a cached spec. Returns change detection via fingerprint comparison. |
+| `generate_types` | Generate TypeScript interfaces or Go structs from an endpoint or named schema. |
 
 ### Recommended Workflow
 
@@ -170,6 +172,38 @@ The LLM calls `diff_endpoints` with both spec URLs and reports added, removed, a
 
 The LLM calls `analyze_tags` + `list_endpoints` + `get_endpoint` + `get_schema` to map out the full data model, dependencies, and API contract.
 
+## LLM Context Guide
+
+Add this snippet to your `CLAUDE.md`, `.cursorrules`, or system prompt to help your LLM use swagger-mcp efficiently:
+
+```markdown
+## API Exploration (swagger-mcp)
+
+When working with external APIs via swagger-mcp:
+
+### Workflow
+1. `fetch_spec` with the spec URL (only needed once per session)
+2. `analyze_tags` to understand the API structure — always start here
+3. `list_endpoints` with tag/method/path filters to find relevant endpoints
+4. `get_endpoint` for full details on a specific endpoint
+5. `generate_types` to get TypeScript interfaces or Go structs ready to use
+6. `get_schema` when you need a specific model's structure
+
+### Rules
+- Always filter by tag before listing endpoints on large APIs
+- Use `search_spec` to find endpoints by keyword (searches paths, summaries, params, and body properties)
+- If the API spec has changed, use `refresh_spec` to get fresh data
+- Default output is TOON format (compact, token-efficient) — use format=json only when needed
+- Use `generate_types` with language=typescript or language=go instead of manually translating schemas
+
+### Anti-patterns
+- Don't call `list_endpoints` without filters on large APIs (wastes tokens)
+- Don't call `get_endpoint` for every endpoint — narrow down with tags/search first
+- Don't re-fetch specs that are already cached — use `spec_status` to check
+```
+
+For **Cursor**, add the same content to `.cursorrules`. For **Windsurf** or other MCP clients, add it to your system prompt or project instructions file.
+
 ## Output Formats
 
 ### TOON (default)
@@ -296,6 +330,10 @@ internal/
 │   └── diskcache.go              L2 disk cache (SHA-256 keys, atomic writes)
 ├── analyzer/analyzer.go          List, search, tag analysis, spec diffing
 ├── extractor/extractor.go        Endpoint detail, schema extraction, $ref resolution
+├── generator/
+│   ├── generator.go              Schema collection, $ref walking, transitive deps
+│   ├── typescript.go             TypeScript interface/type emitter
+│   └── golang.go                 Go struct/const emitter
 ├── formatter/
 │   ├── json.go                   JSON output (with ListResult wrapper)
 │   └── toon.go                   TOON output (headers, strip descriptions)
