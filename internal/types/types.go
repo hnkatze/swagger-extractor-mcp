@@ -102,6 +102,16 @@ type EndpointChange struct {
 	Changes []string `json:"changes"`
 }
 
+// RefreshResult is returned by refresh_spec with before/after comparison.
+type RefreshResult struct {
+	URL            string      `json:"url"`
+	Changed        bool        `json:"changed"`
+	OldFingerprint string      `json:"old_fingerprint,omitempty"`
+	NewFingerprint string      `json:"new_fingerprint,omitempty"`
+	FetchDurationMs int64      `json:"fetch_duration_ms"`
+	Summary        SpecSummary `json:"summary"`
+}
+
 // CacheEntry holds a cached spec with metadata.
 type CacheEntry struct {
 	URL       string

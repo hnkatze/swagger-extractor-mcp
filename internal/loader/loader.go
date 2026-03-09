@@ -355,9 +355,61 @@ func (l *Loader) SpecStatus(rawURL string) *types.SpecStatus {
 	return status
 }
 
-// Invalidate removes a URL from the cache.
+// Invalidate removes a URL from both L1 (memory) and L2 (disk) caches.
 func (l *Loader) Invalidate(rawURL string) {
-	l.cache.Delete(normalizeURL(rawURL))
+	normalized := normalizeURL(rawURL)
+	l.cache.Delete(normalized)
+	if l.diskCache != nil && l.diskCache.Enabled() {
+		l.diskCache.Delete(normalized)
+	}
+}
+
+// ForceLoadFromURL invalidates both cache levels and performs a full HTTP fetch.
+// Returns a RefreshResult with fingerprint comparison to detect spec changes.
+func (l *Loader) ForceLoadFromURL(ctx context.Context, rawURL string) (*openapi3.T, *types.RefreshResult, error) {
+	normalized := normalizeURL(rawURL)
+	start := time.Now()
+
+	// Capture old fingerprint before invalidation
+	var oldFingerprint string
+	if l.diskCache != nil && l.diskCache.Enabled() {
+		if meta, ok := l.diskCache.Meta(normalized); ok {
+			oldFingerprint = meta.Fingerprint
+		}
+	}
+
+	// Invalidate both cache levels
+	l.cache.Delete(normalized)
+	if l.diskCache != nil && l.diskCache.Enabled() {
+		l.diskCache.Delete(normalized)
+	}
+
+	// Full HTTP fetch
+	doc, summary, err := l.fullFetch(ctx, normalized, rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Read new fingerprint from disk meta
+	var newFingerprint string
+	if l.diskCache != nil && l.diskCache.Enabled() {
+		if meta, ok := l.diskCache.Meta(normalized); ok {
+			newFingerprint = meta.Fingerprint
+		}
+	}
+
+	changed := oldFingerprint == "" || oldFingerprint != newFingerprint
+
+	result := &types.RefreshResult{
+		URL:             normalized,
+		Changed:         changed,
+		OldFingerprint:  oldFingerprint,
+		NewFingerprint:  newFingerprint,
+		FetchDurationMs: time.Since(start).Milliseconds(),
+		Summary:         *summary,
+	}
+
+	return doc, result, nil
 }
 
 // normalizeURL normalizes a URL by lowercasing scheme+host and trimming trailing slashes.

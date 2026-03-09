@@ -307,6 +307,42 @@ func FormatListResultTOON(result *types.ListResult) string {
 	return b.String()
 }
 
+// FormatRefreshResultTOON formats a refresh result in TOON notation.
+func FormatRefreshResultTOON(result *types.RefreshResult) string {
+	var b strings.Builder
+
+	b.WriteString("refresh: ")
+	b.WriteString(result.URL)
+	b.WriteString("\n")
+
+	if result.Changed {
+		b.WriteString("status: changed\n")
+	} else {
+		b.WriteString("status: unchanged\n")
+	}
+
+	if result.OldFingerprint != "" {
+		b.WriteString("old_fingerprint: ")
+		b.WriteString(result.OldFingerprint)
+		b.WriteString("\n")
+	}
+	if result.NewFingerprint != "" {
+		b.WriteString("new_fingerprint: ")
+		b.WriteString(result.NewFingerprint)
+		b.WriteString("\n")
+	}
+
+	b.WriteString(fmt.Sprintf("fetch_duration_ms: %d\n", result.FetchDurationMs))
+
+	b.WriteString("spec: ")
+	b.WriteString(result.Summary.Title)
+	b.WriteString(" v")
+	b.WriteString(result.Summary.Version)
+	b.WriteString(fmt.Sprintf(" (%d endpoints, %d schemas)", result.Summary.EndpointCount, result.Summary.SchemaCount))
+
+	return b.String()
+}
+
 // StripDescriptions removes the Description field from endpoint summaries
 // to reduce token output in list views where summary is sufficient.
 func StripDescriptions(endpoints []types.EndpointSummary) []types.EndpointSummary {

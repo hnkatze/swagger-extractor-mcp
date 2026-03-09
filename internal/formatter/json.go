@@ -45,3 +45,8 @@ func FormatDiffJSON(diff *types.DiffResult) (string, error) {
 func FormatListResultJSON(result *types.ListResult) (string, error) {
 	return FormatJSON(result)
 }
+
+// FormatRefreshResultJSON formats a refresh result as JSON.
+func FormatRefreshResultJSON(result *types.RefreshResult) (string, error) {
+	return FormatJSON(result)
+}

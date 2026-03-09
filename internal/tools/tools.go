@@ -42,14 +42,16 @@ func (r *Registry) Register(s *server.MCPServer) {
 	s.AddTool(analyzeTagsTool(), r.handleAnalyzeTags)
 	s.AddTool(diffEndpointsTool(), r.handleDiffEndpoints)
 	s.AddTool(specStatusTool(), r.handleSpecStatus)
+	s.AddTool(refreshSpecTool(), r.handleRefreshSpec)
 }
 
 // --- Tool Definitions ---
 
 func fetchSpecTool() mcp.Tool {
 	return mcp.NewTool("fetch_spec",
-		mcp.WithDescription("Download and cache an OpenAPI/Swagger spec. Returns a compact summary (title, version, base URL, endpoint/tag/schema counts). Call this FIRST to understand the spec before querying endpoints."),
+		mcp.WithDescription("Download and cache an OpenAPI/Swagger spec. Returns a compact summary (title, version, base URL, endpoint/tag/schema counts). Call this FIRST to understand the spec before querying endpoints. Use refresh=true to bypass cache and force a fresh fetch."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec (JSON or YAML)")),
+		mcp.WithString("refresh", mcp.Description("Set to 'true' to bypass cache and force a fresh fetch from the server")),
 	)
 }
 
@@ -120,6 +122,14 @@ func specStatusTool() mcp.Tool {
 	)
 }
 
+func refreshSpecTool() mcp.Tool {
+	return mcp.NewTool("refresh_spec",
+		mcp.WithDescription("Force-refresh a cached spec by invalidating all caches and re-fetching from the server. Returns whether the spec changed (fingerprint comparison) and a fresh summary. Use this when the API spec has been updated and you need the latest version."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec to refresh")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+	)
+}
+
 // --- Helpers ---
 
 func getStringArg(req mcp.CallToolRequest, name string) string {
@@ -130,6 +140,23 @@ func getStringArg(req mcp.CallToolRequest, name string) string {
 		}
 	}
 	return ""
+}
+
+// getBoolArg handles both JSON boolean and string "true"/"false" from MCP clients.
+func getBoolArg(req mcp.CallToolRequest, name string) bool {
+	args := req.GetArguments()
+	v, ok := args[name]
+	if !ok {
+		return false
+	}
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		return strings.EqualFold(val, "true")
+	default:
+		return false
+	}
 }
 
 // getFormat returns the output format from the request, falling back to config default.
@@ -177,9 +204,23 @@ func (r *Registry) handleFetchSpec(ctx context.Context, req mcp.CallToolRequest)
 		return toolError(types.ErrInvalidURL, "url is required"), nil
 	}
 
-	_, summary, err := r.loader.LoadFromURL(ctx, url)
-	if err != nil {
-		return toolError(types.ErrFetchFailed, err.Error()), nil
+	refresh := getBoolArg(req, "refresh")
+
+	var summary *types.SpecSummary
+	var err error
+
+	if refresh {
+		// Force-refresh: invalidate caches and re-fetch
+		_, refreshResult, fetchErr := r.loader.ForceLoadFromURL(ctx, url)
+		if fetchErr != nil {
+			return toolError(types.ErrFetchFailed, fetchErr.Error()), nil
+		}
+		summary = &refreshResult.Summary
+	} else {
+		_, summary, err = r.loader.LoadFromURL(ctx, url)
+		if err != nil {
+			return toolError(types.ErrFetchFailed, err.Error()), nil
+		}
 	}
 
 	output, fmtErr := formatter.FormatJSON(summary)
@@ -458,6 +499,32 @@ func (r *Registry) handleSpecStatus(ctx context.Context, req mcp.CallToolRequest
 	output, err := formatter.FormatJSON(status)
 	if err != nil {
 		return toolError(types.ErrInternalError, err.Error()), nil
+	}
+
+	return mcp.NewToolResultText(output), nil
+}
+
+func (r *Registry) handleRefreshSpec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	url := getStringArg(req, "url")
+	if url == "" {
+		return toolError(types.ErrInvalidURL, "url is required"), nil
+	}
+
+	_, result, err := r.loader.ForceLoadFromURL(ctx, url)
+	if err != nil {
+		return toolError(types.ErrFetchFailed, err.Error()), nil
+	}
+
+	format := r.getFormat(req)
+	var output string
+	if format == types.FormatTOON {
+		output = formatter.FormatRefreshResultTOON(result)
+	} else {
+		var fmtErr error
+		output, fmtErr = formatter.FormatRefreshResultJSON(result)
+		if fmtErr != nil {
+			return toolError(types.ErrInternalError, fmtErr.Error()), nil
+		}
 	}
 
 	return mcp.NewToolResultText(output), nil
