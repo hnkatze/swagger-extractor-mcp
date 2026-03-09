@@ -153,6 +153,13 @@ type SpecStatus struct {
 	DiskCacheEnabled bool         `json:"disk_cache_enabled"`
 }
 
+// GenerateTypesResult is returned by generate_types with the generated code.
+type GenerateTypesResult struct {
+	Language string   `json:"language"`
+	Types    string   `json:"types"`
+	Names    []string `json:"names"`
+}
+
 // ToolError is a structured error response that implements the error interface.
 type ToolError struct {
 	Code    string `json:"code"`

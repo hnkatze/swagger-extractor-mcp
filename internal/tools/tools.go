@@ -14,6 +14,7 @@ import (
 	"github.com/hnkatze/swagger-mcp-go/internal/config"
 	"github.com/hnkatze/swagger-mcp-go/internal/extractor"
 	"github.com/hnkatze/swagger-mcp-go/internal/formatter"
+	"github.com/hnkatze/swagger-mcp-go/internal/generator"
 	"github.com/hnkatze/swagger-mcp-go/internal/loader"
 	"github.com/hnkatze/swagger-mcp-go/internal/types"
 )
@@ -43,6 +44,7 @@ func (r *Registry) Register(s *server.MCPServer) {
 	s.AddTool(diffEndpointsTool(), r.handleDiffEndpoints)
 	s.AddTool(specStatusTool(), r.handleSpecStatus)
 	s.AddTool(refreshSpecTool(), r.handleRefreshSpec)
+	s.AddTool(generateTypesTool(), r.handleGenerateTypes)
 }
 
 // --- Tool Definitions ---
@@ -127,6 +129,18 @@ func refreshSpecTool() mcp.Tool {
 		mcp.WithDescription("Force-refresh a cached spec by invalidating all caches and re-fetching from the server. Returns whether the spec changed (fingerprint comparison) and a fresh summary. Use this when the API spec has been updated and you need the latest version."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec to refresh")),
 		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+	)
+}
+
+func generateTypesTool() mcp.Tool {
+	return mcp.NewTool("generate_types",
+		mcp.WithDescription("Generate ready-to-use type definitions (TypeScript interfaces or Go structs) from an endpoint's schemas or a named schema. Saves time by producing copy-paste-ready code instead of raw schema output."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
+		mcp.WithString("method", mcp.Description("HTTP method (required with path, for endpoint mode)")),
+		mcp.WithString("path", mcp.Description("Endpoint path (required with method, for endpoint mode)")),
+		mcp.WithString("schema", mcp.Description("Schema name for direct schema mode (alternative to method+path)")),
+		mcp.WithString("language", mcp.Description("Target language: typescript (default) or go")),
+		mcp.WithString("format", mcp.Description("Output format: toon (default, plain code) or json (structured with metadata)")),
 	)
 }
 
@@ -528,4 +542,78 @@ func (r *Registry) handleRefreshSpec(ctx context.Context, req mcp.CallToolReques
 	}
 
 	return mcp.NewToolResultText(output), nil
+}
+
+func (r *Registry) handleGenerateTypes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	url := getStringArg(req, "url")
+	if url == "" {
+		return toolError(types.ErrInvalidURL, "url is required"), nil
+	}
+
+	method := getStringArg(req, "method")
+	path := getStringArg(req, "path")
+	schemaName := getStringArg(req, "schema")
+	language := strings.ToLower(getStringArg(req, "language"))
+	if language == "" {
+		language = "typescript"
+	}
+
+	// Validate: must have either (method+path) or schema, not both, not neither
+	hasEndpoint := method != "" || path != ""
+	hasSchema := schemaName != ""
+	if hasEndpoint && hasSchema {
+		return toolError(types.ErrInvalidFormat, "provide either method+path or schema, not both"), nil
+	}
+	if !hasEndpoint && !hasSchema {
+		return toolError(types.ErrInvalidFormat, "provide either method+path (endpoint mode) or schema (schema mode)"), nil
+	}
+	if hasEndpoint && (method == "" || path == "") {
+		return toolError(types.ErrInvalidFormat, "both method and path are required for endpoint mode"), nil
+	}
+	if language != "typescript" && language != "go" {
+		return toolError(types.ErrInvalidFormat, "language must be 'typescript' or 'go'"), nil
+	}
+
+	doc, err := r.loadSpec(ctx, url)
+	if err != nil {
+		return toolError(types.ErrFetchFailed, err.Error()), nil
+	}
+
+	var schemas []*generator.NamedSchema
+	if hasSchema {
+		schemas, err = generator.CollectSchemaByName(doc, schemaName)
+	} else {
+		schemas, err = generator.CollectEndpointSchemas(doc, method, path)
+	}
+	if err != nil {
+		return toolError(types.ErrSchemaNotFound, err.Error()), nil
+	}
+
+	var code string
+	switch language {
+	case "go":
+		code = generator.GenerateGo(schemas)
+	default:
+		code = generator.GenerateTypeScript(schemas)
+	}
+
+	format := r.getFormat(req)
+	if format == types.FormatJSON {
+		names := make([]string, 0, len(schemas))
+		for _, s := range schemas {
+			names = append(names, s.Name)
+		}
+		result := &types.GenerateTypesResult{
+			Language: language,
+			Types:    code,
+			Names:    names,
+		}
+		output, fmtErr := formatter.FormatJSON(result)
+		if fmtErr != nil {
+			return toolError(types.ErrInternalError, fmtErr.Error()), nil
+		}
+		return mcp.NewToolResultText(output), nil
+	}
+
+	return mcp.NewToolResultText(code), nil
 }
