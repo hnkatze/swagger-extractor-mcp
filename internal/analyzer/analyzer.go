@@ -189,7 +189,8 @@ func SearchSpec(doc *openapi3.T, query string) []types.EndpointSummary {
 
 // matchScore returns the relevance score for an operation matching the query.
 // Returns -1 if no match. Lower score = more relevant.
-// Priority: 0=path, 1=summary, 2=operationId, 3=description, 4=parameter names.
+// Priority: 0=path, 1=summary, 2=operationId, 3=description, 4=parameter names,
+// 5=request body properties, 6=response body properties.
 func matchScore(queryLower, path string, op *openapi3.Operation) int {
 	if strings.Contains(strings.ToLower(path), queryLower) {
 		return 0
@@ -211,7 +212,52 @@ func matchScore(queryLower, path string, op *openapi3.Operation) int {
 			return 4
 		}
 	}
+	// Score 5: request body schema property names
+	if op.RequestBody != nil && op.RequestBody.Value != nil {
+		for _, mt := range op.RequestBody.Value.Content {
+			if mt.Schema != nil && matchSchemaProperties(mt.Schema, queryLower) {
+				return 5
+			}
+		}
+	}
+	// Score 6: response body schema property names
+	if op.Responses != nil {
+		for _, respRef := range op.Responses.Map() {
+			if respRef.Value == nil {
+				continue
+			}
+			for _, mt := range respRef.Value.Content {
+				if mt.Schema != nil && matchSchemaProperties(mt.Schema, queryLower) {
+					return 6
+				}
+			}
+		}
+	}
 	return -1
+}
+
+// matchSchemaProperties checks if any top-level property name in the schema
+// contains the query string. Also unwraps one level of arrays.
+func matchSchemaProperties(schema *openapi3.SchemaRef, queryLower string) bool {
+	if schema == nil || schema.Value == nil {
+		return false
+	}
+	s := schema.Value
+	// Direct object properties
+	for name := range s.Properties {
+		if strings.Contains(strings.ToLower(name), queryLower) {
+			return true
+		}
+	}
+	// Array items properties (unwrap one level)
+	if s.Items != nil && s.Items.Value != nil {
+		for name := range s.Items.Value.Properties {
+			if strings.Contains(strings.ToLower(name), queryLower) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // DiffSpecs compares two OpenAPI specs and returns the differences.
