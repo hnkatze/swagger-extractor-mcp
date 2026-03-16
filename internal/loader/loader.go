@@ -78,6 +78,32 @@ func (l *Loader) LoadFromURL(ctx context.Context, rawURL string) (*openapi3.T, *
 	return l.fullFetch(ctx, normalized, rawURL)
 }
 
+// validateDoc validates an OpenAPI doc with relaxed settings for real-world specs.
+func validateDoc(ctx context.Context, doc *openapi3.T) error {
+	if doc.OpenAPI == "" {
+		return nil
+	}
+	sanitizeSecuritySchemes(doc)
+	return doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation())
+}
+
+// sanitizeSecuritySchemes normalizes security scheme fields that real-world specs
+// often get wrong (e.g. "Bearer" instead of "bearer").
+func sanitizeSecuritySchemes(doc *openapi3.T) {
+	if doc.Components == nil || doc.Components.SecuritySchemes == nil {
+		return
+	}
+	for _, ref := range doc.Components.SecuritySchemes {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		ss := ref.Value
+		if ss.Type == "http" && ss.Scheme != "" {
+			ss.Scheme = strings.ToLower(ss.Scheme)
+		}
+	}
+}
+
 // promoteFromDisk re-parses disk-cached data, validates, and stores in L1.
 // Returns the doc and summary, or error if parse/validate fails.
 func (l *Loader) promoteFromDisk(ctx context.Context, normalized string, specData []byte, meta *types.DiskCacheMeta) (*openapi3.T, *types.SpecSummary, error) {
@@ -86,14 +112,11 @@ func (l *Loader) promoteFromDisk(ctx context.Context, normalized string, specDat
 		return nil, nil, err
 	}
 
-	// Validate — skip for Swagger 2.0 specs converted to v3
-	if doc.OpenAPI != "" {
-		if err := doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation()); err != nil {
-			return nil, nil, &types.ToolError{
-				Code:    types.ErrInvalidSpec,
-				Message: "spec validation failed",
-				Details: err.Error(),
-			}
+	if err := validateDoc(ctx, doc); err != nil {
+		return nil, nil, &types.ToolError{
+			Code:    types.ErrInvalidSpec,
+			Message: "spec validation failed",
+			Details: err.Error(),
 		}
 	}
 
@@ -158,14 +181,11 @@ func (l *Loader) conditionalFetch(ctx context.Context, normalized string, diskDa
 			return nil, nil, err
 		}
 
-		// Validate — skip for Swagger 2.0 specs
-		if doc.OpenAPI != "" {
-			if err := doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation()); err != nil {
-				return nil, nil, &types.ToolError{
-					Code:    types.ErrInvalidSpec,
-					Message: "spec validation failed",
-					Details: err.Error(),
-				}
+		if err := validateDoc(ctx, doc); err != nil {
+			return nil, nil, &types.ToolError{
+				Code:    types.ErrInvalidSpec,
+				Message: "spec validation failed",
+				Details: err.Error(),
 			}
 		}
 
@@ -269,17 +289,11 @@ func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*ope
 		return nil, nil, err
 	}
 
-	// Validate — skip for Swagger 2.0 specs converted to v3 by kin-openapi,
-	// as the conversion may leave the openapi field empty which fails strict validation.
-	// DisableExamplesValidation: specs often have examples with extra properties
-	// DisableSchemaDefaultsValidation: specs often have defaults with wrong types (e.g. "1" instead of 1)
-	if doc.OpenAPI != "" {
-		if err := doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation()); err != nil {
-			return nil, nil, &types.ToolError{
-				Code:    types.ErrInvalidSpec,
-				Message: "spec validation failed",
-				Details: err.Error(),
-			}
+	if err := validateDoc(ctx, doc); err != nil {
+		return nil, nil, &types.ToolError{
+			Code:    types.ErrInvalidSpec,
+			Message: "spec validation failed",
+			Details: err.Error(),
 		}
 	}
 
