@@ -309,7 +309,7 @@ func TestResolveSchema_SimpleString(t *testing.T) {
 		},
 	}
 
-	result := resolveSchema(schema, 0, defaultMaxDepth)
+	result := resolveSchema(schema, 0, defaultMaxDepth, map[string]bool{})
 	m, ok := result.(map[string]interface{})
 	if !ok {
 		t.Fatalf("result is %T, want map[string]interface{}", result)
@@ -327,7 +327,7 @@ func TestResolveSchema_WithFormat(t *testing.T) {
 		},
 	}
 
-	result := resolveSchema(schema, 0, defaultMaxDepth)
+	result := resolveSchema(schema, 0, defaultMaxDepth, map[string]bool{})
 	m, ok := result.(map[string]interface{})
 	if !ok {
 		t.Fatalf("result is %T, want map[string]interface{}", result)
@@ -341,7 +341,7 @@ func TestResolveSchema_WithFormat(t *testing.T) {
 }
 
 func TestResolveSchema_Nil(t *testing.T) {
-	result := resolveSchema(nil, 0, defaultMaxDepth)
+	result := resolveSchema(nil, 0, defaultMaxDepth, map[string]bool{})
 	if result != nil {
 		t.Errorf("result = %v, want nil", result)
 	}
@@ -355,18 +355,84 @@ func TestResolveSchema_DepthLimit(t *testing.T) {
 		},
 	}
 
-	result := resolveSchema(schema, 10, defaultMaxDepth)
+	// At/over the depth limit a named schema collapses to a short $ref marker
+	// (the name is preserved so it can be fetched via get_schema).
+	result := resolveSchema(schema, 10, defaultMaxDepth, map[string]bool{})
 	m, ok := result.(map[string]interface{})
 	if !ok {
 		t.Fatalf("result is %T, want map[string]interface{}", result)
 	}
-	if _, exists := m["$circular_ref"]; !exists {
-		t.Error("expected '$circular_ref' key in result")
+	if m["$ref"] != "Circular" {
+		t.Errorf("$ref = %v, want %q", m["$ref"], "Circular")
 	}
-	if m["$circular_ref"] != "#/components/schemas/Circular" {
-		t.Errorf("$circular_ref = %v, want %q", m["$circular_ref"], "#/components/schemas/Circular")
+}
+
+func TestResolveSchema_DedupRepeatedRef(t *testing.T) {
+	// A shared schema referenced twice should expand once, then collapse to
+	// a $ref marker on the second occurrence within the same tree.
+	address := &openapi3.SchemaRef{
+		Ref: "#/components/schemas/Address",
+		Value: &openapi3.Schema{
+			Type: &openapi3.Types{"object"},
+			Properties: openapi3.Schemas{
+				"city": {Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+			},
+		},
 	}
-	if m["depth_limit_reached"] != true {
-		t.Errorf("depth_limit_reached = %v, want true", m["depth_limit_reached"])
+	root := &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type: &openapi3.Types{"object"},
+			Properties: openapi3.Schemas{
+				"billing":  address,
+				"shipping": address,
+			},
+		},
+	}
+
+	result := resolveRoot(root, defaultMaxDepth)
+	m := result.(map[string]interface{})
+	props := m["properties"].(map[string]interface{})
+
+	// "billing" sorts before "shipping", so billing is expanded, shipping is a ref.
+	billing := props["billing"].(map[string]interface{})
+	if _, hasProps := billing["properties"]; !hasProps {
+		t.Errorf("expected first occurrence (billing) to be expanded, got %v", billing)
+	}
+	shipping := props["shipping"].(map[string]interface{})
+	if shipping["$ref"] != "Address" {
+		t.Errorf("expected second occurrence (shipping) to be $ref(Address), got %v", shipping)
+	}
+}
+
+func TestResolveSchema_OmitsExampleAndDefault(t *testing.T) {
+	schema := &openapi3.SchemaRef{
+		Value: &openapi3.Schema{
+			Type:    &openapi3.Types{"string"},
+			Default: "hello",
+			Example: "world",
+		},
+	}
+
+	result := resolveSchema(schema, 0, defaultMaxDepth, map[string]bool{})
+	m := result.(map[string]interface{})
+	if _, has := m["example"]; has {
+		t.Error("example should be omitted to save tokens")
+	}
+	if _, has := m["default"]; has {
+		t.Error("default should be omitted to save tokens")
+	}
+}
+
+func TestCleanDescription(t *testing.T) {
+	cases := map[string]string{
+		"Gets or sets the user identifier": "user identifier",
+		"Gets or sets email":               "email",
+		"The order total":                  "The order total",
+		"":                                 "",
+	}
+	for in, want := range cases {
+		if got := cleanDescription(in); got != want {
+			t.Errorf("cleanDescription(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

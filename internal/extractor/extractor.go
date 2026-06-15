@@ -9,7 +9,11 @@ import (
 	"github.com/hnkatze/swagger-mcp-go/internal/types"
 )
 
-const defaultMaxDepth = 10
+// defaultMaxDepth is the schema resolution depth used when the caller does not
+// specify one. Kept low on purpose: deeply nested schemas explode token counts
+// while rarely adding interpretive value. Callers that need the full tree can
+// pass an explicit resolve_depth up to 10.
+const defaultMaxDepth = 3
 
 var (
 	ErrEndpointNotFound = errors.New(types.ErrEndpointNotFound)
@@ -17,12 +21,50 @@ var (
 )
 
 // effectiveMaxDepth returns the max depth to use for schema resolution.
-// resolveDepth < 0 means use default (10), 0 means no resolution, 1-10 means use that value.
+// resolveDepth < 0 means use default, 0 means no resolution, 1-10 means use that value.
 func effectiveMaxDepth(resolveDepth int) int {
 	if resolveDepth < 0 {
 		return defaultMaxDepth
 	}
 	return resolveDepth
+}
+
+// cleanDescription trims interpretive noise from schema/property descriptions.
+// .NET/Swashbuckle emits "Gets or sets the X" for every property, which is pure
+// boilerplate; stripping it keeps the meaningful remainder and saves tokens.
+func cleanDescription(d string) string {
+	d = strings.TrimSpace(d)
+	if d == "" {
+		return ""
+	}
+	for _, prefix := range []string{"Gets or sets the ", "Gets or sets ", "Gets or set ", "Gets the ", "Gets "} {
+		if len(d) > len(prefix) && strings.HasPrefix(d, prefix) {
+			rest := strings.TrimSpace(d[len(prefix):])
+			if rest != "" {
+				return rest
+			}
+		}
+	}
+	return d
+}
+
+// schemaName extracts the short component name from a $ref string such as
+// "#/components/schemas/User" → "User". Returns "" for inline (un-named) schemas.
+func schemaName(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	parts := strings.Split(ref, "/")
+	return parts[len(parts)-1]
+}
+
+// resolveRoot resolves a top-level schema, seeding a fresh dedup set so that any
+// named ($ref) schema is expanded once per tree and later repeats collapse to a
+// lightweight {"$ref": "Name"} marker. This kills the duplication that dominates
+// real-world specs (a shared sub-schema referenced N times) and also bounds
+// circular references — without losing information, since the name is preserved.
+func resolveRoot(schema *openapi3.SchemaRef, maxDepth int) interface{} {
+	return resolveSchema(schema, 0, maxDepth, map[string]bool{})
 }
 
 // GetEndpoint returns the full detail for a single endpoint.
@@ -44,6 +86,12 @@ func GetEndpoint(doc *openapi3.T, method, path string, resolveDepth int) (*types
 
 	maxDepth := effectiveMaxDepth(resolveDepth)
 
+	// One dedup set shared across the whole endpoint. This is what makes the
+	// difference on .NET-style specs: a shared error envelope (ProblemDetails &
+	// co.) referenced by every status code is expanded once, then collapses to
+	// $ref(Name) in the remaining responses instead of being inlined 5+ times.
+	seen := map[string]bool{}
+
 	detail := &types.EndpointDetail{
 		Method:      strings.ToUpper(method),
 		Path:        path,
@@ -55,16 +103,16 @@ func GetEndpoint(doc *openapi3.T, method, path string, resolveDepth int) (*types
 	}
 
 	// Collect parameters from both path-level and operation-level
-	detail.Parameters = extractParameters(pathItem.Parameters, op.Parameters, maxDepth)
+	detail.Parameters = extractParameters(pathItem.Parameters, op.Parameters, maxDepth, seen)
 
 	// Extract request body
 	if op.RequestBody != nil && op.RequestBody.Value != nil {
-		detail.RequestBody = extractRequestBody(op.RequestBody.Value, maxDepth)
+		detail.RequestBody = extractRequestBody(op.RequestBody.Value, maxDepth, seen)
 	}
 
 	// Extract responses
 	if op.Responses != nil {
-		detail.Responses = extractResponses(op.Responses, maxDepth)
+		detail.Responses = extractResponses(op.Responses, maxDepth, seen)
 	}
 
 	// Extract security
@@ -92,7 +140,7 @@ func GetSchema(doc *openapi3.T, name string, resolveDepth int) (*types.SchemaDet
 	}
 
 	maxDepth := effectiveMaxDepth(resolveDepth)
-	resolved := resolveSchema(schemaRef, 0, maxDepth)
+	resolved := resolveRoot(schemaRef, maxDepth)
 	return &types.SchemaDetail{
 		Name:   name,
 		Schema: resolved,
@@ -122,9 +170,9 @@ func getOperationByMethod(item *openapi3.PathItem, method string) *openapi3.Oper
 }
 
 // extractParameters merges path-level and operation-level parameters.
-func extractParameters(pathParams openapi3.Parameters, opParams openapi3.Parameters, maxDepth int) []types.ParameterDetail {
+func extractParameters(pathParams openapi3.Parameters, opParams openapi3.Parameters, maxDepth int, seen map[string]bool) []types.ParameterDetail {
 	// Use a map to allow operation-level params to override path-level ones
-	seen := make(map[string]types.ParameterDetail)
+	byKey := make(map[string]types.ParameterDetail)
 	var order []string
 
 	addParams := func(params openapi3.Parameters) {
@@ -141,27 +189,27 @@ func extractParameters(pathParams openapi3.Parameters, opParams openapi3.Paramet
 				Description: p.Description,
 			}
 			if p.Schema != nil {
-				pd.Schema = resolveSchema(p.Schema, 0, maxDepth)
+				pd.Schema = resolveSchema(p.Schema, 0, maxDepth, seen)
 			}
-			if _, exists := seen[key]; !exists {
+			if _, exists := byKey[key]; !exists {
 				order = append(order, key)
 			}
-			seen[key] = pd
+			byKey[key] = pd
 		}
 	}
 
 	addParams(pathParams)
 	addParams(opParams)
 
-	results := make([]types.ParameterDetail, 0, len(seen))
+	results := make([]types.ParameterDetail, 0, len(byKey))
 	for _, key := range order {
-		results = append(results, seen[key])
+		results = append(results, byKey[key])
 	}
 	return results
 }
 
 // extractRequestBody converts an openapi3.RequestBody to types.RequestBodyDetail.
-func extractRequestBody(rb *openapi3.RequestBody, maxDepth int) *types.RequestBodyDetail {
+func extractRequestBody(rb *openapi3.RequestBody, maxDepth int, seen map[string]bool) *types.RequestBodyDetail {
 	detail := &types.RequestBodyDetail{
 		Required:    rb.Required,
 		Description: rb.Description,
@@ -174,7 +222,7 @@ func extractRequestBody(rb *openapi3.RequestBody, maxDepth int) *types.RequestBo
 			}
 			md := types.MediaDetail{}
 			if mt.Schema != nil {
-				md.Schema = resolveSchema(mt.Schema, 0, maxDepth)
+				md.Schema = resolveSchema(mt.Schema, 0, maxDepth, seen)
 			}
 			content[mediaType] = md
 		}
@@ -184,7 +232,9 @@ func extractRequestBody(rb *openapi3.RequestBody, maxDepth int) *types.RequestBo
 }
 
 // extractResponses converts an openapi3.Responses to a sorted slice of ResponseDetail.
-func extractResponses(responses *openapi3.Responses, maxDepth int) []types.ResponseDetail {
+// Responses are processed in sorted status-code order and share the endpoint's
+// dedup set, so a schema reused across status codes is expanded only once.
+func extractResponses(responses *openapi3.Responses, maxDepth int, seen map[string]bool) []types.ResponseDetail {
 	respMap := responses.Map()
 	codes := make([]string, 0, len(respMap))
 	for code := range respMap {
@@ -205,7 +255,7 @@ func extractResponses(responses *openapi3.Responses, maxDepth int) []types.Respo
 		if resp.Description != nil {
 			rd.Description = *resp.Description
 		}
-		rd.Headers = extractHeaders(resp.Headers, maxDepth)
+		rd.Headers = extractHeaders(resp.Headers, maxDepth, seen)
 		if resp.Content != nil {
 			content := make(map[string]types.MediaDetail, len(resp.Content))
 			for mediaType, mt := range resp.Content {
@@ -214,7 +264,7 @@ func extractResponses(responses *openapi3.Responses, maxDepth int) []types.Respo
 				}
 				md := types.MediaDetail{}
 				if mt.Schema != nil {
-					md.Schema = resolveSchema(mt.Schema, 0, maxDepth)
+					md.Schema = resolveSchema(mt.Schema, 0, maxDepth, seen)
 				}
 				content[mediaType] = md
 			}
@@ -226,13 +276,22 @@ func extractResponses(responses *openapi3.Responses, maxDepth int) []types.Respo
 }
 
 // extractHeaders converts openapi3.Headers to a sorted slice of HeaderDetail.
-func extractHeaders(headers openapi3.Headers, maxDepth int) []types.HeaderDetail {
+func extractHeaders(headers openapi3.Headers, maxDepth int, seen map[string]bool) []types.HeaderDetail {
 	if len(headers) == 0 {
 		return nil
 	}
 
+	// Iterate header names in sorted order so the shared dedup set is populated
+	// deterministically.
+	names := make([]string, 0, len(headers))
+	for name := range headers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	results := make([]types.HeaderDetail, 0, len(headers))
-	for name, ref := range headers {
+	for _, name := range names {
+		ref := headers[name]
 		if ref == nil || ref.Value == nil {
 			continue
 		}
@@ -244,40 +303,54 @@ func extractHeaders(headers openapi3.Headers, maxDepth int) []types.HeaderDetail
 			Deprecated:  h.Deprecated,
 		}
 		if h.Schema != nil {
-			hd.Schema = resolveSchema(h.Schema, 0, maxDepth)
+			hd.Schema = resolveSchema(h.Schema, 0, maxDepth, seen)
 		}
 		results = append(results, hd)
 	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Name < results[j].Name
-	})
 
 	return results
 }
 
 // resolveSchema recursively converts a SchemaRef into a clean map representation.
-func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int) interface{} {
+//
+// seen tracks named ($ref) schemas already expanded in the current tree. The
+// first time a named schema is encountered it is fully expanded; any later
+// occurrence (a repeat sibling or a circular back-reference) collapses to a
+// {"$ref": "Name"} marker. This removes the single biggest source of token
+// bloat in real specs without losing meaning — the name still tells the model
+// exactly which type it is.
+func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int, seen map[string]bool) interface{} {
 	if schema == nil {
 		return nil
 	}
 
-	// Prevent infinite loops from circular references
+	name := schemaName(schema.Ref)
+
+	// Already expanded once in this tree → reference it by name instead of
+	// inlining the whole structure again.
+	if name != "" && seen[name] {
+		return map[string]interface{}{"$ref": name}
+	}
+
+	// Depth guard: stop descending but keep the name so the model can fetch
+	// the type via get_schema if it needs the rest.
 	if depth >= maxDepth {
-		refName := schema.Ref
-		if refName == "" {
-			refName = "unknown"
+		if name != "" {
+			return map[string]interface{}{"$ref": name}
 		}
-		return map[string]interface{}{
-			"$circular_ref":       refName,
-			"depth_limit_reached": true,
-		}
+		return map[string]interface{}{"$ref": "unknown", "truncated": true}
 	}
 
 	// Access the resolved schema value
 	s := schema.Value
 	if s == nil {
 		return nil
+	}
+
+	// Mark this named schema as expanded before recursing so its own
+	// descendants (circular refs) collapse to a marker.
+	if name != "" {
+		seen[name] = true
 	}
 
 	result := make(map[string]interface{})
@@ -297,9 +370,9 @@ func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int) interface{} 
 		result["format"] = s.Format
 	}
 
-	// Description
-	if s.Description != "" {
-		result["description"] = s.Description
+	// Description — the primary interpretive signal. Cleaned of boilerplate noise.
+	if d := cleanDescription(s.Description); d != "" {
+		result["description"] = d
 	}
 
 	// Enum
@@ -312,30 +385,37 @@ func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int) interface{} 
 		result["required"] = s.Required
 	}
 
-	// Properties (object type)
-	if s.Properties != nil && len(s.Properties) > 0 {
+	// Properties (object type). Iterate in sorted order so the dedup set is
+	// populated deterministically — the alphabetically-first occurrence of a
+	// shared schema is the one that gets expanded.
+	if len(s.Properties) > 0 {
+		propNames := make([]string, 0, len(s.Properties))
+		for n := range s.Properties {
+			propNames = append(propNames, n)
+		}
+		sort.Strings(propNames)
 		props := make(map[string]interface{}, len(s.Properties))
-		for name, propRef := range s.Properties {
-			props[name] = resolveSchema(propRef, depth+1, maxDepth)
+		for _, n := range propNames {
+			props[n] = resolveSchema(s.Properties[n], depth+1, maxDepth, seen)
 		}
 		result["properties"] = props
 	}
 
 	// Items (array type)
 	if s.Items != nil {
-		result["items"] = resolveSchema(s.Items, depth+1, maxDepth)
+		result["items"] = resolveSchema(s.Items, depth+1, maxDepth, seen)
 	}
 
 	// AdditionalProperties
 	if s.AdditionalProperties.Schema != nil {
-		result["additionalProperties"] = resolveSchema(s.AdditionalProperties.Schema, depth+1, maxDepth)
+		result["additionalProperties"] = resolveSchema(s.AdditionalProperties.Schema, depth+1, maxDepth, seen)
 	}
 
 	// OneOf
 	if len(s.OneOf) > 0 {
 		oneOf := make([]interface{}, len(s.OneOf))
 		for i, ref := range s.OneOf {
-			oneOf[i] = resolveSchema(ref, depth+1, maxDepth)
+			oneOf[i] = resolveSchema(ref, depth+1, maxDepth, seen)
 		}
 		result["oneOf"] = oneOf
 	}
@@ -344,7 +424,7 @@ func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int) interface{} 
 	if len(s.AnyOf) > 0 {
 		anyOf := make([]interface{}, len(s.AnyOf))
 		for i, ref := range s.AnyOf {
-			anyOf[i] = resolveSchema(ref, depth+1, maxDepth)
+			anyOf[i] = resolveSchema(ref, depth+1, maxDepth, seen)
 		}
 		result["anyOf"] = anyOf
 	}
@@ -353,7 +433,7 @@ func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int) interface{} 
 	if len(s.AllOf) > 0 {
 		allOf := make([]interface{}, len(s.AllOf))
 		for i, ref := range s.AllOf {
-			allOf[i] = resolveSchema(ref, depth+1, maxDepth)
+			allOf[i] = resolveSchema(ref, depth+1, maxDepth, seen)
 		}
 		result["allOf"] = allOf
 	}
@@ -376,15 +456,11 @@ func resolveSchema(schema *openapi3.SchemaRef, depth, maxDepth int) interface{} 
 		result["deprecated"] = true
 	}
 
-	// Default
-	if s.Default != nil {
-		result["default"] = s.Default
-	}
-
-	// Example
-	if s.Example != nil {
-		result["example"] = s.Example
-	}
+	// Note: `default` and `example` are intentionally omitted. In real-world
+	// specs (notably .NET/Swashbuckle) example objects duplicate the entire
+	// structure with sample data, dominating token counts while adding little
+	// the model can't infer from types + descriptions. `description` is kept —
+	// it is the actual interpretive signal.
 
 	return result
 }

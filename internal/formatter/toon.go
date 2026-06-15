@@ -260,6 +260,10 @@ func FormatSchemaTOON(schema *types.SchemaDetail) string {
 	var b strings.Builder
 
 	b.WriteString(schema.Name)
+	if desc := schemaDescription(schema.Schema); desc != "" {
+		b.WriteString(" — ")
+		b.WriteString(desc)
+	}
 	b.WriteString(":\n")
 	schemaStr := toonSchema(schema.Schema, 2)
 	if schemaStr != "" {
@@ -652,17 +656,28 @@ func toonSchema(schema interface{}, indent int) string {
 				keyLabel += "*"
 			}
 
+			desc := schemaDescription(v)
+
 			propType := extractSchemaType(v)
 			if propType != "" {
+				// Simple field: "name*: type — description"
 				b.WriteString(prefix)
 				b.WriteString(keyLabel)
 				b.WriteString(": ")
 				b.WriteString(propType)
+				if desc != "" {
+					b.WriteString(" — ")
+					b.WriteString(desc)
+				}
 				b.WriteString("\n")
 			} else {
-				// Complex nested schema
+				// Complex nested schema: keep the description on the header line.
 				b.WriteString(prefix)
 				b.WriteString(keyLabel)
+				if desc != "" {
+					b.WriteString(" — ")
+					b.WriteString(desc)
+				}
 				b.WriteString(":\n")
 				b.WriteString(toonSchema(v, indent+2))
 			}
@@ -732,6 +747,33 @@ func toonMapSchema(m map[string]interface{}, indent int) string {
 	}
 
 	return b.String()
+}
+
+// maxInlineDescription bounds how much of a property description is rendered
+// inline. Long prose belongs in get_schema/the source spec, not repeated in
+// every field line — a short hint is enough for the model to interpret intent.
+const maxInlineDescription = 100
+
+// schemaDescription pulls a short, single-line description from a resolved
+// schema map for inline rendering. Returns "" when there is none.
+func schemaDescription(schema interface{}) string {
+	m, ok := schema.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	d, _ := m["description"].(string)
+	d = strings.TrimSpace(d)
+	if d == "" {
+		return ""
+	}
+	// Collapse newlines so the description stays on one line.
+	d = strings.ReplaceAll(d, "\r", " ")
+	d = strings.ReplaceAll(d, "\n", " ")
+	d = strings.Join(strings.Fields(d), " ")
+	if len(d) > maxInlineDescription {
+		d = strings.TrimSpace(d[:maxInlineDescription]) + "…"
+	}
+	return d
 }
 
 // extractSchemaType extracts a simple type string from a schema.
