@@ -29,13 +29,14 @@ All output is **token-optimized by default** using TOON format (~40% fewer token
 | `fetch_spec` | Download and cache a spec. Returns title, version, endpoint/tag/schema counts. Supports `refresh=true`. |
 | `analyze_tags` | Tag summary with endpoint counts and method breakdown. **Start here** to understand the API. |
 | `list_endpoints` | List endpoints with filters (tag, method, path pattern). Auto-limited to 50 results. |
-| `get_endpoint` | Full detail for one endpoint — params, request body, responses, resolved schemas. |
-| `get_schema` | Get a named schema with all nested `$ref` fully resolved. |
+| `get_endpoint` | Full detail for one endpoint — params, request body, responses, resolved schemas (field descriptions inline; repeats shown as `$ref(Name)`). |
+| `get_schema` | Get a named schema with nested `$ref` resolved. Use to expand a `$ref(Name)` seen in `get_endpoint`. |
 | `search_spec` | Full-text search across paths, summaries, operation IDs, parameters, and body properties. Auto-limited to 50. |
 | `diff_endpoints` | Compare two spec versions. Shows added, removed, and changed endpoints. |
 | `spec_status` | Check cache status (memory/disk), fingerprint, age, ETag. No HTTP requests. |
 | `refresh_spec` | Force-refresh a cached spec. Returns change detection via fingerprint comparison. |
 | `generate_types` | Generate TypeScript interfaces or Go structs from an endpoint or named schema. |
+| `usage_guide` | Return this server's workflow, token-saving rules, output notation, and example call sequences. The LLM can call it to self-orient when it lacks setup context. |
 
 ### Recommended Workflow
 
@@ -53,6 +54,8 @@ For large APIs, the tools guide the LLM toward an efficient pattern:
 All tools accept `format`: `toon` (default, compact) or `json`.
 
 `list_endpoints` and `search_spec` also accept `limit` (default: 50, 0 = unlimited).
+
+`get_endpoint` and `get_schema` accept `resolve_depth` (0-10, default: 3). Raise it for deeply nested models; lower it (or 0 = names only) to cut tokens further.
 
 ## Installation
 
@@ -195,11 +198,15 @@ When working with external APIs via swagger-mcp:
 - If the API spec has changed, use `refresh_spec` to get fresh data
 - Default output is TOON format (compact, token-efficient) — use format=json only when needed
 - Use `generate_types` with language=typescript or language=go instead of manually translating schemas
+- Schemas show field descriptions inline (`field*: type — description`); a `*` marks a required field
+- A repeated schema appears once, then as `$ref(Name)` — call `get_schema Name` only if you need its fields expanded
+- Schemas resolve 3 levels deep by default; pass `resolve_depth` up to 10 for deeper models
 
 ### Anti-patterns
 - Don't call `list_endpoints` without filters on large APIs (wastes tokens)
 - Don't call `get_endpoint` for every endpoint — narrow down with tags/search first
 - Don't re-fetch specs that are already cached — use `spec_status` to check
+- Don't expand every `$ref(Name)` — only fetch the ones whose fields you actually need
 ```
 
 For **Cursor**, add the same content to `.cursorrules`. For **Windsurf** or other MCP clients, add it to your system prompt or project instructions file.
@@ -344,10 +351,12 @@ internal/
 ### Key Design Decisions
 
 - **Token-first defaults** — TOON format + auto-limits minimize LLM token consumption
+- **Per-endpoint `$ref` dedup** — a schema reused across responses (e.g. a shared error envelope) is expanded once, then referenced as `$ref(Name)`; cuts ~60% of tokens on real-world specs without losing meaning
+- **Description-forward schemas** — field descriptions are surfaced inline (`field*: type — description`) while noisy `example`/`default` payloads are dropped, so the model gets signal, not bulk
 - **Guided tool descriptions** — tool descriptions steer LLMs toward efficient filter-first workflows
 - **Two-level cache** — memory + disk with HTTP conditional requests for instant cross-session access
 - **kin-openapi** for parsing — handles OpenAPI 2.0/3.x with automatic `$ref` resolution
-- **Recursive `$ref` resolution** with depth limit (10) and circular reference protection
+- **Recursive `$ref` resolution** with a low default depth (3, override up to 10) and circular reference protection
 - **stdio transport** — universal compatibility with MCP clients
 - **Zero configuration** — sensible defaults, env vars for optional tuning
 

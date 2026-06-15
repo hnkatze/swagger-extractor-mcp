@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -176,6 +178,34 @@ func TestAnalyzeTagsTool_DescriptionGuidesWorkflow(t *testing.T) {
 	desc := tool.Description
 	if desc == "" {
 		t.Fatal("analyze_tags should have a description")
+	}
+}
+
+func TestUsageGuideTool_NoParams(t *testing.T) {
+	tool := usageGuideTool()
+	if tool.Description == "" {
+		t.Fatal("usage_guide should have a description")
+	}
+	if len(tool.InputSchema.Properties) != 0 {
+		t.Errorf("usage_guide should take no params, got %d", len(tool.InputSchema.Properties))
+	}
+}
+
+func TestHandleUsageGuide_ReturnsEmbeddedGuide(t *testing.T) {
+	r := New(config.Default())
+	result, err := r.handleUsageGuide(context.Background(), makeRequest(nil))
+	if err != nil {
+		t.Fatalf("handleUsageGuide error: %v", err)
+	}
+	text := extractText(result)
+	if text == "" {
+		t.Fatal("usage guide should not be empty")
+	}
+	// Spot-check that the guide carries its key signals for the LLM.
+	for _, want := range []string{"analyze_tags", "$ref(", "resolve_depth", "Anti-patterns"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("usage guide should mention %q", want)
+		}
 	}
 }
 

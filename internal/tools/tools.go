@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,6 +19,13 @@ import (
 	"github.com/hnkatze/swagger-mcp-go/internal/loader"
 	"github.com/hnkatze/swagger-mcp-go/internal/types"
 )
+
+// llmGuide is the on-demand usage guide returned by the usage_guide tool. It is
+// embedded at build time so the server can document itself to an LLM that lacks
+// the project's CLAUDE.md / system-prompt context.
+//
+//go:embed llm_guide.md
+var llmGuide string
 
 // Registry holds the shared dependencies for all tool handlers.
 type Registry struct {
@@ -45,104 +53,111 @@ func (r *Registry) Register(s *server.MCPServer) {
 	s.AddTool(specStatusTool(), r.handleSpecStatus)
 	s.AddTool(refreshSpecTool(), r.handleRefreshSpec)
 	s.AddTool(generateTypesTool(), r.handleGenerateTypes)
+	s.AddTool(usageGuideTool(), r.handleUsageGuide)
 }
 
 // --- Tool Definitions ---
 
 func fetchSpecTool() mcp.Tool {
 	return mcp.NewTool("fetch_spec",
-		mcp.WithDescription("Download and cache an OpenAPI/Swagger spec. Returns a compact summary (title, version, base URL, endpoint/tag/schema counts). Call this FIRST to understand the spec before querying endpoints. Use refresh=true to bypass cache and force a fresh fetch."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec (JSON or YAML)")),
-		mcp.WithString("refresh", mcp.Description("Set to 'true' to bypass cache and force a fresh fetch from the server")),
+		mcp.WithDescription("Fetch & cache a spec, returns a compact summary (title, version, counts). Call FIRST. refresh=true bypasses cache."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL (JSON or YAML)")),
+		mcp.WithString("refresh", mcp.Description("'true' to force a fresh fetch")),
 	)
 }
 
 func listEndpointsTool() mcp.Tool {
 	return mcp.NewTool("list_endpoints",
-		mcp.WithDescription("List endpoints from an OpenAPI spec. IMPORTANT: Use analyze_tags first to discover available tags, then filter by tag here. Results are auto-limited (default 50). Always use filters to get precise results instead of browsing all endpoints."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
-		mcp.WithString("tag", mcp.Description("Filter by tag name (case-insensitive). Use analyze_tags to discover tags first.")),
-		mcp.WithString("method", mcp.Description("Filter by HTTP method (GET, POST, PUT, DELETE, PATCH)")),
-		mcp.WithString("path_pattern", mcp.Description("Filter by path substring (e.g. '/users')")),
-		mcp.WithString("limit", mcp.Description("Max results to return (default: 50, 0 = unlimited)")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+		mcp.WithDescription("List endpoints (METHOD path — summary [tags]). Run analyze_tags first, then filter by tag/method/path here. Auto-limited to 50; always filter rather than browse all."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("tag", mcp.Description("Filter by tag (case-insensitive); discover via analyze_tags")),
+		mcp.WithString("method", mcp.Description("Filter by HTTP method")),
+		mcp.WithString("path_pattern", mcp.Description("Filter by path substring, e.g. '/users'")),
+		mcp.WithString("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func getEndpointTool() mcp.Tool {
 	return mcp.NewTool("get_endpoint",
-		mcp.WithDescription("Get full details of a single endpoint: parameters, request body, responses, and resolved schemas. Use this after finding the endpoint via list_endpoints or search_spec."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
-		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method (GET, POST, PUT, DELETE, PATCH)")),
-		mcp.WithString("path", mcp.Required(), mcp.Description("Endpoint path (e.g. '/pets/{petId}')")),
-		mcp.WithString("resolve_depth", mcp.Description("Max schema resolution depth (0-10). Default: 10. Lower values reduce output tokens for complex schemas. 0 = no resolution.")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+		mcp.WithDescription("Full detail of one endpoint: params, request body, responses, resolved schemas (with field descriptions). Shared schemas are shown once then referenced as $ref(Name) — fetch those via get_schema. Use after list_endpoints/search_spec."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method")),
+		mcp.WithString("path", mcp.Required(), mcp.Description("Endpoint path, e.g. '/pets/{petId}'")),
+		mcp.WithString("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). Raise for deep models, lower for fewer tokens. 0 = names only.")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func getSchemaTool() mcp.Tool {
 	return mcp.NewTool("get_schema",
-		mcp.WithDescription("Get a schema/model with all $refs resolved. Use when you need the data structure for a specific model."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
-		mcp.WithString("name", mcp.Required(), mcp.Description("Schema name (e.g. 'User', 'Pet')")),
-		mcp.WithString("resolve_depth", mcp.Description("Max schema resolution depth (0-10). Default: 10. Lower values reduce output tokens for complex schemas. 0 = no resolution.")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+		mcp.WithDescription("Resolve a named schema/model with field types and descriptions. Use to expand a $ref(Name) seen in get_endpoint."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Schema name, e.g. 'User'")),
+		mcp.WithString("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). 0 = names only.")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func searchSpecTool() mcp.Tool {
 	return mcp.NewTool("search_spec",
-		mcp.WithDescription("Search endpoints by keyword across paths, summaries, descriptions, and operation IDs. Results are ranked by relevance and auto-limited (default 50). Use specific keywords for precise results."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
+		mcp.WithDescription("Keyword search across paths, summaries, descriptions, operation IDs, and body field names. Ranked by relevance, auto-limited to 50. Use specific keywords."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query (case-insensitive)")),
-		mcp.WithString("limit", mcp.Description("Max results to return (default: 50, 0 = unlimited)")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+		mcp.WithString("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func analyzeTagsTool() mcp.Tool {
 	return mcp.NewTool("analyze_tags",
-		mcp.WithDescription("Get all tags with endpoint counts and method breakdown. START HERE to understand the API structure, then use tag filters in list_endpoints for targeted results."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+		mcp.WithDescription("Tags with endpoint counts and method breakdown. START HERE to map the API, then filter list_endpoints by tag."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func diffEndpointsTool() mcp.Tool {
 	return mcp.NewTool("diff_endpoints",
-		mcp.WithDescription("Compare two OpenAPI spec versions. Shows added, removed, and changed endpoints."),
-		mcp.WithString("url_old", mcp.Required(), mcp.Description("URL of the old/previous spec version")),
-		mcp.WithString("url_new", mcp.Required(), mcp.Description("URL of the new/current spec version")),
-		mcp.WithString("path", mcp.Description("Filter diff by path substring")),
-		mcp.WithString("method", mcp.Description("Filter diff by HTTP method")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+		mcp.WithDescription("Compare two spec versions: added, removed, changed endpoints."),
+		mcp.WithString("url_old", mcp.Required(), mcp.Description("Old spec URL")),
+		mcp.WithString("url_new", mcp.Required(), mcp.Description("New spec URL")),
+		mcp.WithString("path", mcp.Description("Filter by path substring")),
+		mcp.WithString("method", mcp.Description("Filter by HTTP method")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func specStatusTool() mcp.Tool {
 	return mcp.NewTool("spec_status",
-		mcp.WithDescription("Check cache status of a spec without fetching. Returns cache source, fingerprint, age, and disk stats."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec to check")),
+		mcp.WithDescription("Cache status without fetching: source, fingerprint, age, disk stats."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL to check")),
 	)
 }
 
 func refreshSpecTool() mcp.Tool {
 	return mcp.NewTool("refresh_spec",
-		mcp.WithDescription("Force-refresh a cached spec by invalidating all caches and re-fetching from the server. Returns whether the spec changed (fingerprint comparison) and a fresh summary. Use this when the API spec has been updated and you need the latest version."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec to refresh")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, compact) or json")),
+		mcp.WithDescription("Invalidate caches and re-fetch. Reports whether the spec changed (fingerprint) plus a fresh summary. Use when the API spec was updated."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL to refresh")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func generateTypesTool() mcp.Tool {
 	return mcp.NewTool("generate_types",
-		mcp.WithDescription("Generate ready-to-use type definitions (TypeScript interfaces or Go structs) from an endpoint's schemas or a named schema. Saves time by producing copy-paste-ready code instead of raw schema output."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("URL of the OpenAPI/Swagger spec")),
-		mcp.WithString("method", mcp.Description("HTTP method (required with path, for endpoint mode)")),
-		mcp.WithString("path", mcp.Description("Endpoint path (required with method, for endpoint mode)")),
-		mcp.WithString("schema", mcp.Description("Schema name for direct schema mode (alternative to method+path)")),
-		mcp.WithString("language", mcp.Description("Target language: typescript (default) or go")),
-		mcp.WithString("format", mcp.Description("Output format: toon (default, plain code) or json (structured with metadata)")),
+		mcp.WithDescription("Emit copy-paste-ready type definitions (TypeScript interfaces or Go structs) from an endpoint or a named schema."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("method", mcp.Description("HTTP method (with path = endpoint mode)")),
+		mcp.WithString("path", mcp.Description("Endpoint path (with method = endpoint mode)")),
+		mcp.WithString("schema", mcp.Description("Schema name (alternative to method+path)")),
+		mcp.WithString("language", mcp.Description("typescript (default) or go")),
+		mcp.WithString("format", mcp.Description("toon (default, plain code) or json (with metadata)")),
+	)
+}
+
+func usageGuideTool() mcp.Tool {
+	return mcp.NewTool("usage_guide",
+		mcp.WithDescription("Return how to use this server efficiently: workflow, token-saving rules, output notation ($ref/required/depth), and example call sequences. Call this first if you're unsure how to explore an API."),
 	)
 }
 
@@ -633,4 +648,8 @@ func (r *Registry) handleGenerateTypes(ctx context.Context, req mcp.CallToolRequ
 	}
 
 	return mcp.NewToolResultText(code), nil
+}
+
+func (r *Registry) handleUsageGuide(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultText(llmGuide), nil
 }
