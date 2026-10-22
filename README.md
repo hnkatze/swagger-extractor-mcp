@@ -310,6 +310,24 @@ All settings have sensible defaults. Environment variables are optional override
 | `SWAGGER_MCP_DISK_CACHE_TTL` | `24h` | Disk cache TTL (Go duration format) |
 | `SWAGGER_MCP_CONDITIONAL_FETCH` | `true` | Enable HTTP conditional requests |
 | `SWAGGER_MCP_MAX_DISK_ENTRIES` | `50` | Max specs cached on disk |
+| `SWAGGER_MCP_FETCH_TIMEOUT` | `120s` | HTTP fetch timeout (Go duration format, must be > 0) |
+
+### Slow specs and MCP client timeouts
+
+Some servers generate the OpenAPI document on every request; a large spec can take
+30-60s before the first byte. The fetch timeout above only governs the MCP server
+side. Your MCP client has its own per-request timeout (60s by default in most
+clients) and will abort first, so raise it for this server too. In Pi:
+
+```json
+"swagger-mcp": {
+  "command": "swagger-mcp",
+  "timeout": 180
+}
+```
+
+Because specs are cached on disk (24h by default), only the first fetch of a spec
+is slow.
 
 ## Defaults
 
@@ -322,7 +340,7 @@ All settings have sensible defaults. Environment variables are optional override
 | Max cached specs (memory) | 20 |
 | Max cached specs (disk) | 50 |
 | Max spec size | 20 MB |
-| Fetch timeout | 30 seconds |
+| Fetch timeout | 120 seconds |
 | Conditional fetch | Enabled |
 
 ## Architecture

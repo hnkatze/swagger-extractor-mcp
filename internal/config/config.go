@@ -28,7 +28,7 @@ func Default() Config {
 		CacheTTL:         5 * time.Minute,
 		MaxCacheSize:     20,
 		MaxSpecSize:      20 * 1024 * 1024, // 20MB
-		FetchTimeout:     30 * time.Second,
+		FetchTimeout:     120 * time.Second,
 		DefaultFormat:    "toon",
 		DefaultLimit:     50,
 		CacheDir:         "",
@@ -46,6 +46,7 @@ func Default() Config {
 //   - SWAGGER_MCP_MAX_DISK_ENTRIES  → MaxDiskEntries (integer)
 //   - SWAGGER_MCP_DEFAULT_FORMAT    → DefaultFormat ("json" or "toon")
 //   - SWAGGER_MCP_DEFAULT_LIMIT     → DefaultLimit (integer, 0 = unlimited)
+//   - SWAGGER_MCP_FETCH_TIMEOUT     → FetchTimeout (time.ParseDuration format, must be > 0)
 func Load() Config {
 	cfg := Default()
 
@@ -69,6 +70,13 @@ func Load() Config {
 	if v := os.Getenv("SWAGGER_MCP_DISK_CACHE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.DiskCacheTTL = d
+		}
+	}
+
+	// A zero or negative duration would make every fetch fail instantly.
+	if v := os.Getenv("SWAGGER_MCP_FETCH_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.FetchTimeout = d
 		}
 	}
 
