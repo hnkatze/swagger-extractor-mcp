@@ -344,6 +344,18 @@ func FormatListResultTOON(result *types.ListResult) string {
 	return b.String()
 }
 
+// formatVersionSuffix renders " v<version>", tolerating specs whose info.version
+// already carries the prefix. Prefixing blindly turned "v1" into "vv1".
+func formatVersionSuffix(version string) string {
+	if version == "" {
+		return ""
+	}
+	if strings.HasPrefix(version, "v") || strings.HasPrefix(version, "V") {
+		return " " + version
+	}
+	return " v" + version
+}
+
 // FormatRefreshResultTOON formats a refresh result in TOON notation.
 func FormatRefreshResultTOON(result *types.RefreshResult) string {
 	var b strings.Builder
@@ -373,8 +385,7 @@ func FormatRefreshResultTOON(result *types.RefreshResult) string {
 
 	b.WriteString("spec: ")
 	b.WriteString(result.Summary.Title)
-	b.WriteString(" v")
-	b.WriteString(result.Summary.Version)
+	b.WriteString(formatVersionSuffix(result.Summary.Version))
 	b.WriteString(fmt.Sprintf(" (%d endpoints, %d schemas)", result.Summary.EndpointCount, result.Summary.SchemaCount))
 
 	return b.String()

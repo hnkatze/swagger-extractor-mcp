@@ -231,3 +231,112 @@ func assertToolHasParam(t *testing.T, tool mcp.Tool, paramName string) {
 		t.Errorf("tool %q missing parameter %q", tool.Name, paramName)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Numeric and boolean argument tolerance (S1)
+// ---------------------------------------------------------------------------
+
+// MCP clients that decode JSON send numbers as float64, and older calls send
+// strings. Both must resolve, or a declared number silently falls back to the
+// default limit and the caller never learns why.
+func TestGetLimit_NumericArg(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  interface{}
+		want int
+	}{
+		{"json number", float64(10), 10},
+		{"go int", 10, 10},
+		{"legacy string", "10", 10},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &Registry{cfg: config.Config{DefaultLimit: 50}}
+			req := makeRequest(map[string]interface{}{"limit": tc.arg})
+			if got := r.getLimit(req); got != tc.want {
+				t.Errorf("getLimit(%T %v) = %d, want %d", tc.arg, tc.arg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetResolveDepth_NumericArg(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  interface{}
+		want int
+	}{
+		{"json number", float64(5), 5},
+		{"go int", 5, 5},
+		{"legacy string", "5", 5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := makeRequest(map[string]interface{}{"resolve_depth": tc.arg})
+			if got := getResolveDepth(req); got != tc.want {
+				t.Errorf("getResolveDepth(%T %v) = %d, want %d", tc.arg, tc.arg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetBoolArg_BooleanArg(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  interface{}
+		want bool
+	}{
+		{"json boolean", true, true},
+		{"legacy string", "true", true},
+		{"json false", false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := makeRequest(map[string]interface{}{"refresh": tc.arg})
+			if got := getBoolArg(req, "refresh"); got != tc.want {
+				t.Errorf("getBoolArg(%T %v) = %v, want %v", tc.arg, tc.arg, got, tc.want)
+			}
+		})
+	}
+}
+
+// The declared schema type is what the model sees; declaring a number as a
+// string is what forces tool calls to quote it.
+func TestToolParamTypes_AreNotAllStrings(t *testing.T) {
+	cases := []struct {
+		tool  mcp.Tool
+		param string
+		want  string
+	}{
+		{listEndpointsTool(), "limit", "number"},
+		{searchSpecTool(), "limit", "number"},
+		{getEndpointTool(), "resolve_depth", "number"},
+		{fetchSpecTool(), "refresh", "boolean"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.tool.Name+"/"+tc.param, func(t *testing.T) {
+			got := paramSchemaType(t, tc.tool, tc.param)
+			if got != tc.want {
+				t.Errorf("%s param %q declared type = %q, want %q", tc.tool.Name, tc.param, got, tc.want)
+			}
+		})
+	}
+}
+
+func paramSchemaType(t *testing.T, tool mcp.Tool, param string) string {
+	t.Helper()
+	raw, ok := tool.InputSchema.Properties[param]
+	if !ok {
+		t.Fatalf("%s has no param %q", tool.Name, param)
+	}
+	schema, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("%s param %q is not a schema object (%T)", tool.Name, param, raw)
+	}
+	typ, _ := schema["type"].(string)
+	return typ
+}

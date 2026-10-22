@@ -740,3 +740,53 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// ---------------------------------------------------------------------------
+// FormatRefreshResultTOON — spec version prefix (S2)
+// ---------------------------------------------------------------------------
+
+func TestFormatRefreshResultTOON_VersionPrefix(t *testing.T) {
+	cases := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{"already prefixed", "v1", "spec: BipBip Api backoffice v1 (840 endpoints, 1025 schemas)"},
+		{"uppercase prefixed", "V2", "spec: BipBip Api backoffice V2 (840 endpoints, 1025 schemas)"},
+		{"plain semver", "1.2.3", "spec: BipBip Api backoffice v1.2.3 (840 endpoints, 1025 schemas)"},
+		{"empty", "", "spec: BipBip Api backoffice (840 endpoints, 1025 schemas)"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &types.RefreshResult{
+				URL:            "https://example.com/spec.json",
+				Changed:        false,
+				FetchDurationMs: 48028,
+				Summary: types.SpecSummary{
+					Title:         "BipBip Api backoffice",
+					Version:       tc.version,
+					EndpointCount: 840,
+					SchemaCount:   1025,
+				},
+			}
+
+			output := FormatRefreshResultTOON(result)
+
+			if !strings.Contains(output, tc.want) {
+				t.Errorf("version %q rendered wrong.\ngot spec line: %q\nwant spec line: %q",
+					tc.version, specLine(output), tc.want)
+			}
+		})
+	}
+}
+
+// specLine returns the "spec:" line of a TOON refresh result, for readable failures.
+func specLine(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "spec: ") {
+			return line
+		}
+	}
+	return ""
+}

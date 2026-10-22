@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -62,7 +64,7 @@ func fetchSpecTool() mcp.Tool {
 	return mcp.NewTool("fetch_spec",
 		mcp.WithDescription("Fetch & cache a spec, returns a compact summary (title, version, counts). Call FIRST. refresh=true bypasses cache."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL (JSON or YAML)")),
-		mcp.WithString("refresh", mcp.Description("'true' to force a fresh fetch")),
+		mcp.WithBoolean("refresh", mcp.Description("true to force a fresh fetch, bypassing caches")),
 	)
 }
 
@@ -73,7 +75,7 @@ func listEndpointsTool() mcp.Tool {
 		mcp.WithString("tag", mcp.Description("Filter by tag (case-insensitive); discover via analyze_tags")),
 		mcp.WithString("method", mcp.Description("Filter by HTTP method")),
 		mcp.WithString("path_pattern", mcp.Description("Filter by path substring, e.g. '/users'")),
-		mcp.WithString("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
+		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -84,7 +86,7 @@ func getEndpointTool() mcp.Tool {
 		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Endpoint path, e.g. '/pets/{petId}'")),
-		mcp.WithString("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). Raise for deep models, lower for fewer tokens. 0 = names only.")),
+		mcp.WithNumber("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). Raise for deep models, lower for fewer tokens. 0 = names only.")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -94,7 +96,7 @@ func getSchemaTool() mcp.Tool {
 		mcp.WithDescription("Resolve a named schema/model with field types and descriptions. Use to expand a $ref(Name) seen in get_endpoint."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Schema name, e.g. 'User'")),
-		mcp.WithString("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). 0 = names only.")),
+		mcp.WithNumber("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). 0 = names only.")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -104,7 +106,7 @@ func searchSpecTool() mcp.Tool {
 		mcp.WithDescription("Keyword search across paths, summaries, descriptions, operation IDs, and body field names. Ranked by relevance, auto-limited to 50. Use specific keywords."),
 		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query (case-insensitive)")),
-		mcp.WithString("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
+		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -207,13 +209,45 @@ func (r *Registry) getFormat(req mcp.CallToolRequest) types.OutputFormat {
 	}
 }
 
+// getIntArg resolves an integer argument from any shape an MCP client may send:
+// decoded JSON numbers arrive as float64, older clients send strings, and Go
+// callers may pass int. Returns ok=false when absent or not a whole number.
+func getIntArg(req mcp.CallToolRequest, name string) (int, bool) {
+	raw, ok := req.GetArguments()[name]
+	if !ok {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, false
+		}
+		return int(v), true
+	case float32:
+		return int(v), true
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return int(n), true
+		}
+		return 0, false
+	case string:
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return n, true
+		}
+		return 0, false
+	default:
+		return 0, false
+	}
+}
+
 // getLimit returns the result limit from the request, falling back to config default.
 func (r *Registry) getLimit(req mcp.CallToolRequest) int {
-	s := getStringArg(req, "limit")
-	if s != "" {
-		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
-			return n
-		}
+	if n, ok := getIntArg(req, "limit"); ok && n >= 0 {
+		return n
 	}
 	return r.cfg.DefaultLimit
 }
@@ -221,14 +255,11 @@ func (r *Registry) getLimit(req mcp.CallToolRequest) int {
 // getResolveDepth returns the schema resolution depth from the request.
 // Returns -1 if not provided (meaning use default), or 0-10 for explicit values.
 func getResolveDepth(req mcp.CallToolRequest) int {
-	s := getStringArg(req, "resolve_depth")
-	if s == "" {
-		return -1 // not provided, use default
+	n, ok := getIntArg(req, "resolve_depth")
+	if !ok || n < 0 || n > 10 {
+		return -1 // not provided or invalid, use default
 	}
-	if n, err := strconv.Atoi(s); err == nil && n >= 0 && n <= 10 {
-		return n
-	}
-	return -1 // invalid value, use default
+	return n
 }
 
 func (r *Registry) loadSpec(ctx context.Context, url string) (*openapi3.T, error) {
