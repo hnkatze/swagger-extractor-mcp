@@ -138,8 +138,8 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | T5 | S7 | done | `eb20fd7 docs: rewrite the README for the local index product` |
 | T6 | S1 | done | `d379c44 refactor(loader): delete the dead fetch path` |
 | T7 | S9 | done | `87e2eff refactor(store): answer discovery from the catalog` |
-| T8 | S10,S11 | in progress | `feat(store): unindex and a recovery hint` |
-| T9 | S12 | in progress | `docs(guide): teach the real workflow` |
+| T8 | S10,S11 | done | `5ec151f feat(store): unindex command and a recovery hint for an unreadable store` |
+| T9 | S12 | done | `a78b265 docs(guide): teach the real workflow and guard it against drift` |
 
 Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
 parity); slice 2 = `da8822b` (store-backed queries); slice 3 = `8b76ed7`
@@ -236,3 +236,16 @@ usage exponga el uso correcto del mcp"
 **L15** (author): reading of L14 — the follow-ups (unindex, recovery hint) and a
 real `usage_guide` are in scope; `index_spec` stays out because the user runs the
 agent locally with a shell (the guide now says so). Publishing stays parked.
+
+**L16** (evidence, this session):
+- `unindex` verified by hand: `removed petstore: Petstore 1.0.0 (5 endpoints, 4 schemas)`;
+  unknown name exits 1 with the indexed list and writes nothing.
+- Corrupt store: the tool answer names the store path and the recovery action,
+  and the file's sha256 is identical before and after; no -wal/-shm sidecars are
+  created by the failed read.
+- Guide drift guard (`internal/tools/guide_test.go`) is non-vacuous: a mutation
+  run with a fictional tool row and a fictional parameter makes it fail with both
+  messages, and it passes again once the guide is restored.
+- Suite green (10 packages, CGO off). Contract note: `swagger-mcp -h` now prints
+  help instead of starting the stdio server, which nobody scripted but is a
+  behavior change worth remembering.
