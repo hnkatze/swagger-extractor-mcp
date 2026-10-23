@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -402,5 +403,117 @@ func TestGetOptionalBoolArg(t *testing.T) {
 	absent := getOptionalBoolArg(makeRequest(map[string]interface{}{}), "deprecated")
 	if absent != nil {
 		t.Errorf("absent should yield nil (meaning both), got %v", *absent)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Session default URL (S4)
+// ---------------------------------------------------------------------------
+
+func TestNew_SeedsActiveURLFromConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.DefaultURL = "https://example.com/seed.json"
+	r := New(cfg)
+	if got := r.activeURL(); got != cfg.DefaultURL {
+		t.Errorf("activeURL = %q, want %q", got, cfg.DefaultURL)
+	}
+}
+
+func TestResolveURL_ExplicitBeatsActive(t *testing.T) {
+	r := New(config.Default())
+	r.setActiveURL("https://example.com/active.json")
+	req := makeRequest(map[string]interface{}{"url": "https://example.com/explicit.json"})
+	if got := r.resolveURL(req); got != "https://example.com/explicit.json" {
+		t.Errorf("resolveURL = %q, want explicit url", got)
+	}
+}
+
+func TestResolveURL_FallsBackToActive(t *testing.T) {
+	r := New(config.Default())
+	r.setActiveURL("https://example.com/active.json")
+	if got := r.resolveURL(makeRequest(map[string]interface{}{})); got != "https://example.com/active.json" {
+		t.Errorf("resolveURL = %q, want active url", got)
+	}
+}
+
+func TestResolveURL_NeitherSetIsEmpty(t *testing.T) {
+	r := New(config.Default())
+	if got := r.resolveURL(makeRequest(map[string]interface{}{})); got != "" {
+		t.Errorf("resolveURL = %q, want empty", got)
+	}
+}
+
+func TestHandlers_NoURLErrorNamesFetchSpec(t *testing.T) {
+	r := New(config.Default())
+	ctx := context.Background()
+	handlers := map[string]func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error){
+		"fetch_spec":     r.handleFetchSpec,
+		"list_endpoints": r.handleListEndpoints,
+		"get_endpoint":   r.handleGetEndpoint,
+		"get_schema":     r.handleGetSchema,
+		"search_spec":    r.handleSearchSpec,
+		"list_schemas":   r.handleListSchemas,
+		"analyze_tags":   r.handleAnalyzeTags,
+		"spec_status":    r.handleSpecStatus,
+		"refresh_spec":   r.handleRefreshSpec,
+		"generate_types": r.handleGenerateTypes,
+	}
+	for name, h := range handlers {
+		t.Run(name, func(t *testing.T) {
+			result, err := h(ctx, makeRequest(map[string]interface{}{}))
+			if err != nil {
+				t.Fatalf("handler error: %v", err)
+			}
+			if !result.IsError {
+				t.Fatal("expected a tool error when no url is available")
+			}
+			text := extractText(result)
+			for _, want := range []string{"url", "fetch_spec"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("error %q should mention %q", text, want)
+				}
+			}
+		})
+	}
+}
+
+func TestURLParam_NotRequired(t *testing.T) {
+	tools := []mcp.Tool{
+		fetchSpecTool(), listEndpointsTool(), getEndpointTool(), getSchemaTool(),
+		searchSpecTool(), listSchemasTool(), analyzeTagsTool(), specStatusTool(),
+		refreshSpecTool(), generateTypesTool(),
+	}
+	for _, tool := range tools {
+		for _, req := range tool.InputSchema.Required {
+			if req == "url" {
+				t.Errorf("tool %q still requires url", tool.Name)
+			}
+		}
+	}
+}
+
+func TestActiveURL_ConcurrentAccess(t *testing.T) {
+	r := New(config.Default())
+	req := makeRequest(map[string]interface{}{})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				r.setActiveURL("https://example.com/spec.json")
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				_ = r.resolveURL(req)
+				_ = r.activeURL()
+			}
+		}()
+	}
+	wg.Wait()
+	if got := r.resolveURL(req); got != "https://example.com/spec.json" {
+		t.Errorf("resolveURL = %q after concurrent writes", got)
 	}
 }

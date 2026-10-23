@@ -99,6 +99,7 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	t.Setenv("SWAGGER_MCP_DEFAULT_FORMAT", "json")
 	t.Setenv("SWAGGER_MCP_DEFAULT_LIMIT", "100")
 	t.Setenv("SWAGGER_MCP_FETCH_TIMEOUT", "3m")
+	t.Setenv("SWAGGER_MCP_DEFAULT_URL", "https://example.com/openapi.json")
 
 	cfg := Load()
 
@@ -122,6 +123,9 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if cfg.FetchTimeout != 3*time.Minute {
 		t.Errorf("FetchTimeout = %v, want %v", cfg.FetchTimeout, 3*time.Minute)
+	}
+	if cfg.DefaultURL != "https://example.com/openapi.json" {
+		t.Errorf("DefaultURL = %q, want %q", cfg.DefaultURL, "https://example.com/openapi.json")
 	}
 }
 

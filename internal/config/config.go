@@ -20,6 +20,7 @@ type Config struct {
 	DiskCacheTTL     time.Duration // TTL for disk cache entries
 	ConditionalFetch bool          // Enable HTTP conditional requests (ETags)
 	MaxDiskEntries   int           // Max number of cached specs on disk
+	DefaultURL       string        // Starting session spec URL (empty = none)
 }
 
 // Default returns the default configuration.
@@ -47,6 +48,7 @@ func Default() Config {
 //   - SWAGGER_MCP_DEFAULT_FORMAT    → DefaultFormat ("json" or "toon")
 //   - SWAGGER_MCP_DEFAULT_LIMIT     → DefaultLimit (integer, 0 = unlimited)
 //   - SWAGGER_MCP_FETCH_TIMEOUT     → FetchTimeout (time.ParseDuration format, must be > 0)
+//   - SWAGGER_MCP_DEFAULT_URL       → DefaultURL (spec URL used when a tool call omits url)
 func Load() Config {
 	cfg := Default()
 
@@ -93,6 +95,10 @@ func Load() Config {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.MaxDiskEntries = n
 		}
+	}
+
+	if v := os.Getenv("SWAGGER_MCP_DEFAULT_URL"); v != "" {
+		cfg.DefaultURL = v
 	}
 
 	// Resolve CacheDir if still empty.

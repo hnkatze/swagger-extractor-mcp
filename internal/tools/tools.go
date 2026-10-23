@@ -8,6 +8,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -33,6 +34,10 @@ var llmGuide string
 type Registry struct {
 	loader *loader.Loader
 	cfg    config.Config
+
+	// mu guards active, the session default URL shared by concurrent tool calls.
+	mu     sync.RWMutex
+	active string
 }
 
 // New creates a new tool Registry with the given config.
@@ -40,7 +45,29 @@ func New(cfg config.Config) *Registry {
 	return &Registry{
 		loader: loader.New(cfg),
 		cfg:    cfg,
+		active: cfg.DefaultURL,
 	}
+}
+
+func (r *Registry) setActiveURL(url string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.active = url
+}
+
+func (r *Registry) activeURL() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.active
+}
+
+// resolveURL returns the explicit url argument, else the session default,
+// else "" (the caller reports the error).
+func (r *Registry) resolveURL(req mcp.CallToolRequest) string {
+	if url := getStringArg(req, "url"); url != "" {
+		return url
+	}
+	return r.activeURL()
 }
 
 // Register registers all MCP tools on the server.
@@ -64,7 +91,7 @@ func (r *Registry) Register(s *server.MCPServer) {
 func fetchSpecTool() mcp.Tool {
 	return mcp.NewTool("fetch_spec",
 		mcp.WithDescription("Fetch & cache a spec, returns a compact summary (title, version, counts). Call FIRST. refresh=true bypasses cache."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL (JSON or YAML)")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithBoolean("refresh", mcp.Description("true to force a fresh fetch, bypassing caches")),
 	)
 }
@@ -72,7 +99,7 @@ func fetchSpecTool() mcp.Tool {
 func listEndpointsTool() mcp.Tool {
 	return mcp.NewTool("list_endpoints",
 		mcp.WithDescription("List endpoints (METHOD path — summary [tags]). Run analyze_tags first, then filter by tag/method/path here. Auto-limited to 50; always filter rather than browse all."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("tag", mcp.Description("Filter by tag (case-insensitive); discover via analyze_tags")),
 		mcp.WithString("method", mcp.Description("Filter by HTTP method")),
 		mcp.WithString("path_pattern", mcp.Description("Filter by path substring, e.g. '/users'")),
@@ -86,7 +113,7 @@ func listEndpointsTool() mcp.Tool {
 func getEndpointTool() mcp.Tool {
 	return mcp.NewTool("get_endpoint",
 		mcp.WithDescription("Full detail of one endpoint: params, request body, responses, resolved schemas (with field descriptions). Shared schemas are shown once then referenced as $ref(Name) — fetch those via get_schema. Use after list_endpoints/search_spec."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("method", mcp.Required(), mcp.Description("HTTP method")),
 		mcp.WithString("path", mcp.Required(), mcp.Description("Endpoint path, e.g. '/pets/{petId}'")),
 		mcp.WithNumber("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). Raise for deep models, lower for fewer tokens. 0 = names only.")),
@@ -97,7 +124,7 @@ func getEndpointTool() mcp.Tool {
 func getSchemaTool() mcp.Tool {
 	return mcp.NewTool("get_schema",
 		mcp.WithDescription("Resolve a named schema/model with field types and descriptions. Use to expand a $ref(Name) seen in get_endpoint."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("name", mcp.Required(), mcp.Description("Schema name, e.g. 'User'")),
 		mcp.WithNumber("resolve_depth", mcp.Description("Schema nesting depth 0-10 (default 3). 0 = names only.")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
@@ -107,7 +134,7 @@ func getSchemaTool() mcp.Tool {
 func searchSpecTool() mcp.Tool {
 	return mcp.NewTool("search_spec",
 		mcp.WithDescription("Keyword search across paths, summaries, descriptions, operation IDs, and body field names. Ranked by relevance, auto-limited to 50. Use specific keywords."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query (case-insensitive)")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
@@ -118,7 +145,7 @@ func searchSpecTool() mcp.Tool {
 func listSchemasTool() mcp.Tool {
 	return mcp.NewTool("list_schemas",
 		mcp.WithDescription("List component schemas with field count and usage (endpoints referencing each). Call get_schema with a name to see its fields. Auto-limited to 50; use filter to narrow."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("filter", mcp.Description("Filter by schema name substring (case-insensitive)")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
@@ -129,7 +156,7 @@ func listSchemasTool() mcp.Tool {
 func analyzeTagsTool() mcp.Tool {
 	return mcp.NewTool("analyze_tags",
 		mcp.WithDescription("Tags with endpoint counts and method breakdown. START HERE to map the API, then filter list_endpoints by tag."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -148,14 +175,14 @@ func diffEndpointsTool() mcp.Tool {
 func specStatusTool() mcp.Tool {
 	return mcp.NewTool("spec_status",
 		mcp.WithDescription("Cache status without fetching: source, fingerprint, age, disk stats."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL to check")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 	)
 }
 
 func refreshSpecTool() mcp.Tool {
 	return mcp.NewTool("refresh_spec",
 		mcp.WithDescription("Invalidate caches and re-fetch. Reports whether the spec changed (fingerprint) plus a fresh summary. Use when the API spec was updated."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL to refresh")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -163,7 +190,7 @@ func refreshSpecTool() mcp.Tool {
 func generateTypesTool() mcp.Tool {
 	return mcp.NewTool("generate_types",
 		mcp.WithDescription("Emit copy-paste-ready type definitions (TypeScript interfaces or Go structs) from an endpoint or a named schema."),
-		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("method", mcp.Description("HTTP method (with path = endpoint mode)")),
 		mcp.WithString("path", mcp.Description("Endpoint path (with method = endpoint mode)")),
 		mcp.WithString("schema", mcp.Description("Schema name (alternative to method+path)")),
@@ -316,6 +343,8 @@ func (r *Registry) loadSpec(ctx context.Context, url string) (*openapi3.T, error
 	return doc, err
 }
 
+const errURLRequired = "url is required: pass url or call fetch_spec first to set a session default"
+
 func toolError(code, message string) *mcp.CallToolResult {
 	return mcp.NewToolResultError(fmt.Sprintf("[%s] %s", code, message))
 }
@@ -323,9 +352,9 @@ func toolError(code, message string) *mcp.CallToolResult {
 // --- Handlers ---
 
 func (r *Registry) handleFetchSpec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	refresh := getBoolArg(req, "refresh")
@@ -347,6 +376,8 @@ func (r *Registry) handleFetchSpec(ctx context.Context, req mcp.CallToolRequest)
 		}
 	}
 
+	r.setActiveURL(url)
+
 	output, fmtErr := formatter.FormatJSON(summary)
 	if fmtErr != nil {
 		return toolError(types.ErrInternalError, fmtErr.Error()), nil
@@ -356,9 +387,9 @@ func (r *Registry) handleFetchSpec(ctx context.Context, req mcp.CallToolRequest)
 }
 
 func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	doc, err := r.loadSpec(ctx, url)
@@ -414,9 +445,9 @@ func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequ
 }
 
 func (r *Registry) handleGetEndpoint(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	method := getStringArg(req, "method")
@@ -452,9 +483,9 @@ func (r *Registry) handleGetEndpoint(ctx context.Context, req mcp.CallToolReques
 }
 
 func (r *Registry) handleGetSchema(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	name := getStringArg(req, "name")
@@ -489,9 +520,9 @@ func (r *Registry) handleGetSchema(ctx context.Context, req mcp.CallToolRequest)
 }
 
 func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	query := getStringArg(req, "query")
@@ -547,9 +578,9 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (r *Registry) handleListSchemas(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	doc, err := r.loadSpec(ctx, url)
@@ -582,9 +613,9 @@ func (r *Registry) handleListSchemas(ctx context.Context, req mcp.CallToolReques
 }
 
 func (r *Registry) handleAnalyzeTags(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	doc, err := r.loadSpec(ctx, url)
@@ -651,9 +682,9 @@ func (r *Registry) handleDiffEndpoints(ctx context.Context, req mcp.CallToolRequ
 }
 
 func (r *Registry) handleSpecStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	status := r.loader.SpecStatus(url)
@@ -667,9 +698,9 @@ func (r *Registry) handleSpecStatus(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (r *Registry) handleRefreshSpec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	_, result, err := r.loader.ForceLoadFromURL(ctx, url)
@@ -693,9 +724,9 @@ func (r *Registry) handleRefreshSpec(ctx context.Context, req mcp.CallToolReques
 }
 
 func (r *Registry) handleGenerateTypes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	url := getStringArg(req, "url")
+	url := r.resolveURL(req)
 	if url == "" {
-		return toolError(types.ErrInvalidURL, "url is required"), nil
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
 	method := getStringArg(req, "method")
