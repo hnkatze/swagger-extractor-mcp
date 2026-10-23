@@ -12,9 +12,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/config"
-	"github.com/hnkatze/swagger-mcp-go/internal/loader"
-	"github.com/hnkatze/swagger-mcp-go/internal/store"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/config"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/loader"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
 )
 
 // ---------------------------------------------------------------------------

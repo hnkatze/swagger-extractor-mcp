@@ -7,8 +7,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/config"
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/config"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // ---------------------------------------------------------------------------

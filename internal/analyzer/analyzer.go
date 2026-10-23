@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // forEachOperation iterates over all non-nil operations on a PathItem.

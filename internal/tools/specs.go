@@ -11,9 +11,9 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/loader"
-	"github.com/hnkatze/swagger-mcp-go/internal/store"
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/loader"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // specCacheSize bounds how many stored documents one session keeps parsed in

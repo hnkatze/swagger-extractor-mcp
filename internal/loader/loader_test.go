@@ -7,7 +7,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // loadPetstoreData is a test helper that reads the petstore.json fixture.

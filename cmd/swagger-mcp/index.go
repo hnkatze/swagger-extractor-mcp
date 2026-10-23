@@ -14,9 +14,9 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/config"
-	"github.com/hnkatze/swagger-mcp-go/internal/loader"
-	"github.com/hnkatze/swagger-mcp-go/internal/store"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/config"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/loader"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
 )
 
 const indexUsage = "usage: swagger-mcp index [--refresh] [--name NAME] <url|file>..."

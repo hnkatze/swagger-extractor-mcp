@@ -16,13 +16,13 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/analyzer"
-	"github.com/hnkatze/swagger-mcp-go/internal/config"
-	"github.com/hnkatze/swagger-mcp-go/internal/extractor"
-	"github.com/hnkatze/swagger-mcp-go/internal/formatter"
-	"github.com/hnkatze/swagger-mcp-go/internal/generator"
-	"github.com/hnkatze/swagger-mcp-go/internal/loader"
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/analyzer"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/config"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/extractor"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/formatter"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/generator"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/loader"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // llmGuide is the on-demand usage guide returned by the usage_guide tool. It is

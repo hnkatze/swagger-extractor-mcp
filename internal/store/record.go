@@ -8,8 +8,8 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/analyzer"
-	"github.com/hnkatze/swagger-mcp-go/internal/loader"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/analyzer"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/loader"
 )
 
 // The categories search_spec matches within, in the priority order the analyzer

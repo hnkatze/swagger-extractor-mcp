@@ -34,11 +34,11 @@ step, then cheap structured queries.
 
 ```bash
 # Go 1.25+
-go install github.com/hnkatze/swagger-mcp-go/cmd/swagger-mcp@latest
+go install github.com/hnkatze/swagger-extractor-mcp/cmd/swagger-mcp@latest
 ```
 
 Or take the release asset for your platform from
-[GitHub Releases](https://github.com/hnkatze/swagger-mcp-go/releases):
+[GitHub Releases](https://github.com/hnkatze/swagger-extractor-mcp/releases):
 
 ```bash
 # Linux / macOS — archives are swagger-mcp_<version>_<os>_<arch>.tar.gz
@@ -51,8 +51,8 @@ sudo mv swagger-mcp /usr/local/bin/
 From source:
 
 ```bash
-git clone https://github.com/hnkatze/swagger-mcp-go.git
-cd swagger-mcp-go
+git clone https://github.com/hnkatze/swagger-extractor-mcp.git
+cd swagger-extractor-mcp
 go build -o swagger-mcp ./cmd/swagger-mcp/
 ```
 

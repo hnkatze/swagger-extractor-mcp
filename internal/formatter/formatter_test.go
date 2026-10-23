@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // ---------------------------------------------------------------------------

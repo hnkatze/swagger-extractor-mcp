@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // Format dispatches to JSON or TOON based on the format parameter.

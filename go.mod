@@ -1,4 +1,4 @@
-module github.com/hnkatze/swagger-mcp-go
+module github.com/hnkatze/swagger-extractor-mcp
 
 go 1.25.0
 

@@ -7,8 +7,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/config"
-	"github.com/hnkatze/swagger-mcp-go/internal/tools"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/config"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/tools"
 )
 
 const serverName = "swagger-mcp"

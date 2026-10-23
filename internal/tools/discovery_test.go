@@ -9,7 +9,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/store"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
 )
 
 // ---------------------------------------------------------------------------

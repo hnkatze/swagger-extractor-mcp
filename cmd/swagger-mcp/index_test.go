@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/store"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
 )
 
 // fixtureDir is resolved once at package init, before any test changes the

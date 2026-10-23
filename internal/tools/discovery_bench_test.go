@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/analyzer"
-	"github.com/hnkatze/swagger-mcp-go/internal/loader"
-	"github.com/hnkatze/swagger-mcp-go/internal/store"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/analyzer"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/loader"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
 )
 
 // indexForBenchmark writes raw into a throwaway store and opens it for queries,

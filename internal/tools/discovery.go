@@ -8,9 +8,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/formatter"
-	"github.com/hnkatze/swagger-mcp-go/internal/store"
-	"github.com/hnkatze/swagger-mcp-go/internal/types"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/formatter"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
+	"github.com/hnkatze/swagger-extractor-mcp/internal/types"
 )
 
 // staleAfter is how old a stored copy may be before spec_status calls it stale
