@@ -120,7 +120,7 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | T4 | S6 | done | (shipped with T3 in `8b76ed7`) |
 | T5 | S7 | done | `eb20fd7 docs: rewrite the README for the local index product` |
 | T6 | S1 | done | `d379c44 refactor(loader): delete the dead fetch path` |
-| T7 | S9 | in progress | `refactor(store): answer discovery from the catalog` |
+| T7 | S9 | done | `87e2eff refactor(store): answer discovery from the catalog` |
 
 Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
 parity); slice 2 = `da8822b` (store-backed queries); slice 3 = `8b76ed7`
@@ -194,3 +194,19 @@ public hosting is explicitly not implied (S7b).
 constraint for a later decision, recorded here so it is not lost: with no volume
 on the server there is no store to read, so a hosted mode could only work if the
 store or its documents arrive from the client per request. Not in scope today.
+
+**L13** (evidence, this session):
+- T7 verified independently, not just by the worker: after corrupting the stored
+  blob by hand, `list_endpoints` still answered from the catalog (5 endpoints)
+  while `get_endpoint` reported `[STORE_ERROR]` naming the repair command.
+- Parity: 49 answers captured from the pre-change implementation before the
+  switch, all identical afterwards.
+- Benchmarks (50 runs): `list_endpoints` 698µs → 94µs on the petstore fixture and
+  23.4ms → 0.53ms on the 130-endpoint fixture (45x).
+- Schema v2 migrates a v1 store on the writable path (blobs, metadata and
+  `fetched_at` untouched) and refuses on the read path with the command to run.
+- Module path corrected to `github.com/hnkatze/swagger-extractor-mcp` (`be1b9cc`),
+  because `go install` resolves the module path as the repository URL: the
+  published v0.8.0 README promised an install that could never work.
+- Released with T7 as v0.8.1 once pushed; the doc's follow-ups stay open:
+  `unindex` for orphaned rows, a recovery hint for a corrupt SQLite file.
