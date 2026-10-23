@@ -634,3 +634,75 @@ func TestHandleGenerateTypes_SchemaModeStillWorks(t *testing.T) {
 		t.Fatalf("schema mode regressed: %q", extractText(res))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// progressCtx — fetch heartbeat plumbing (S7)
+// ---------------------------------------------------------------------------
+
+// Without a progress token the caller did not ask to be kept informed, so the
+// context must pass through untouched and no heartbeat goroutine may start.
+func TestProgressCtx_NoTokenIsUnchanged(t *testing.T) {
+	r := New(config.Default())
+	ctx := context.Background()
+
+	got := r.progressCtx(ctx, makeRequest(map[string]interface{}{}))
+
+	if got != ctx {
+		t.Error("progressCtx returned a different context without a progress token")
+	}
+}
+
+// A token alone is not enough: without the MCP server reachable from ctx there is
+// nobody to notify, so the context must still pass through untouched.
+func TestProgressCtx_NoServerIsUnchanged(t *testing.T) {
+	r := New(config.Default())
+	ctx := context.Background()
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Meta: &mcp.Meta{ProgressToken: "token-1"},
+	}}
+
+	got := r.progressCtx(ctx, req)
+
+	if got != ctx {
+		t.Error("progressCtx attached a heartbeat with no server in the context")
+	}
+}
+
+func TestValidateSpecTool_HasParams(t *testing.T) {
+	tool := validateSpecTool()
+	assertToolHasParam(t, tool, "url")
+	assertToolHasParam(t, tool, "format")
+	for _, req := range tool.InputSchema.Required {
+		if req == "url" {
+			t.Error("validate_spec must not require url")
+		}
+	}
+}
+
+func TestHandleValidateSpec_LoadsWithViolations(t *testing.T) {
+	// No "openapi" field: the loader skips validation so this loads, but a
+	// strict validation pass reports it.
+	const spec = `{"info":{"title":"t","version":"1"},"paths":{}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(spec))
+	}))
+	t.Cleanup(srv.Close)
+
+	r := New(config.Default())
+	res, err := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{"url": srv.URL}))
+	if err != nil || res.IsError {
+		t.Fatalf("report must be a normal result: %v %v", err, res)
+	}
+	if text := extractText(res); !strings.Contains(text, "INVALID") {
+		t.Errorf("expected INVALID verdict, got %q", text)
+	}
+}
+
+func TestHandleValidateSpec_RequiresURL(t *testing.T) {
+	r := New(config.Default())
+	res, _ := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{}))
+	if !res.IsError || !strings.Contains(extractText(res), "fetch_spec") {
+		t.Fatalf("expected URL-required error, got %q", extractText(res))
+	}
+}

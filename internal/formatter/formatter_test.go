@@ -887,3 +887,45 @@ func TestFormatSecurityTOON_ConjunctionWithinOneRequirement(t *testing.T) {
 		t.Errorf("a single alternative is not a choice, got:\n%s", out)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FormatValidationTOON
+// ---------------------------------------------------------------------------
+
+func TestFormatValidationTOON_Valid(t *testing.T) {
+	out := FormatValidationTOON(&types.ValidationReport{Valid: true, SpecVersion: "3.0.0", Title: "Pets"})
+	first := strings.SplitN(out, "\n", 2)[0]
+	for _, want := range []string{"VALID", "0 violations"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("first line %q missing %q", first, want)
+		}
+	}
+	if strings.Contains(first, "INVALID") {
+		t.Errorf("valid report rendered INVALID: %q", first)
+	}
+}
+
+func TestFormatValidationTOON_Invalid(t *testing.T) {
+	out := FormatValidationTOON(&types.ValidationReport{
+		ViolationCount: 2, Violations: []string{"a broke", "b broke"}, SpecVersion: "3.0.0", Title: "Pets",
+	})
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if !strings.Contains(lines[0], "INVALID") || !strings.Contains(lines[0], "2 violations") {
+		t.Errorf("first line = %q", lines[0])
+	}
+	if !strings.Contains(out, "a broke\n") || !strings.Contains(out, "b broke") {
+		t.Errorf("violations missing:\n%s", out)
+	}
+	if strings.Contains(out, "omitted") {
+		t.Errorf("no truncation expected:\n%s", out)
+	}
+}
+
+func TestFormatValidationTOON_TruncationNote(t *testing.T) {
+	out := FormatValidationTOON(&types.ValidationReport{
+		ViolationCount: 40, Violations: []string{"x"}, SpecVersion: "3.0.0",
+	})
+	if !strings.Contains(out, "39 more omitted") {
+		t.Errorf("expected omitted-count note:\n%s", out)
+	}
+}

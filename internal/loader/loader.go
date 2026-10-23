@@ -2,11 +2,13 @@ package loader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -85,6 +87,29 @@ func validateDoc(ctx context.Context, doc *openapi3.T) error {
 	}
 	sanitizeSecuritySchemes(doc)
 	return doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation())
+}
+
+// ValidateDocument reports the violations doc.Validate finds, using the same
+// relaxed options as validateDoc so it can never disagree with whether a spec
+// loads. Unlike validateDoc it does not normalize anything first, so values the
+// loader silently fixes are reported as written. The result is sorted and is
+// empty (never nil) for a valid document.
+func ValidateDocument(doc *openapi3.T) []string {
+	violations := []string{}
+	err := doc.Validate(context.Background(), openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation())
+	if err == nil {
+		return violations
+	}
+	var multi openapi3.MultiError
+	if errors.As(err, &multi) {
+		for _, e := range multi {
+			violations = append(violations, e.Error())
+		}
+	} else {
+		violations = append(violations, err.Error())
+	}
+	sort.Strings(violations)
+	return violations
 }
 
 // sanitizeSecuritySchemes normalizes security scheme fields that real-world specs

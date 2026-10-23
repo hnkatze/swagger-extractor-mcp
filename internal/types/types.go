@@ -240,6 +240,16 @@ type SecurityOverview struct {
 	UnauthenticatedOverride int                  `json:"unauthenticated_override"`
 }
 
+// ValidationReport is the verdict of validate_spec. Violations may be truncated:
+// ViolationCount is always the full number found.
+type ValidationReport struct {
+	Valid          bool     `json:"valid"`
+	ViolationCount int      `json:"violation_count"`
+	Violations     []string `json:"violations"`
+	SpecVersion    string   `json:"spec_version"`
+	Title          string   `json:"title"`
+}
+
 // Error codes
 const (
 	ErrInvalidURL          = "INVALID_URL"

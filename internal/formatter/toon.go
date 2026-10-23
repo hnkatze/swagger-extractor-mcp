@@ -993,3 +993,32 @@ func FormatSecurityTOON(o *types.SecurityOverview) string {
 
 	return b.String()
 }
+
+// FormatValidationTOON formats a validation verdict: one summary line, then one
+// violation per line, with a note when the list was truncated.
+func FormatValidationTOON(rep *types.ValidationReport) string {
+	var b strings.Builder
+	verdict := "VALID"
+	if !rep.Valid {
+		verdict = "INVALID"
+	}
+	noun := "violations"
+	if rep.ViolationCount == 1 {
+		noun = "violation"
+	}
+	b.WriteString(fmt.Sprintf("%s: %d %s", verdict, rep.ViolationCount, noun))
+	if rep.Title != "" {
+		b.WriteString(" | " + rep.Title)
+	}
+	if rep.SpecVersion != "" {
+		b.WriteString(" (openapi " + rep.SpecVersion + ")")
+	}
+	b.WriteString("\n")
+	for _, v := range rep.Violations {
+		b.WriteString(v + "\n")
+	}
+	if omitted := rep.ViolationCount - len(rep.Violations); omitted > 0 {
+		b.WriteString(fmt.Sprintf("... %d more omitted\n", omitted))
+	}
+	return b.String()
+}

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1016,5 +1017,51 @@ func TestForceLoadFromURL_FailedRefreshKeepsCachedSpec(t *testing.T) {
 	}
 	if got := hits.Load(); got != hitsAfterFailedRefresh {
 		t.Errorf("serving the cached spec after a failed refresh made a network call: hits went %d -> %d", hitsAfterFailedRefresh, got)
+	}
+}
+
+func mustLoadDoc(t *testing.T, spec string) *openapi3.T {
+	t.Helper()
+	doc, err := openapi3.NewLoader().LoadFromData([]byte(spec))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return doc
+}
+
+const validSpecJSON = `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{"/pets/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"ok"}}}}}}`
+
+// the path template names {id} but the operation declares no such parameter.
+const brokenSpecJSON = `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{"/pets/{id}":{"get":{"responses":{"200":{"description":"ok"}}}},"/owners/{oid}":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+
+func TestValidateDocument_ValidHasNoViolations(t *testing.T) {
+	got := ValidateDocument(mustLoadDoc(t, validSpecJSON))
+	if got == nil || len(got) != 0 {
+		t.Fatalf("ValidateDocument = %#v, want empty non-nil slice", got)
+	}
+}
+
+func TestValidateDocument_ReportsRealViolation(t *testing.T) {
+	got := ValidateDocument(mustLoadDoc(t, brokenSpecJSON))
+	if len(got) == 0 {
+		t.Fatal("expected at least one violation for a missing path parameter")
+	}
+}
+
+func TestValidateDocument_DeterministicOrder(t *testing.T) {
+	first := ValidateDocument(mustLoadDoc(t, brokenSpecJSON))
+	for i := 0; i < 20; i++ {
+		next := ValidateDocument(mustLoadDoc(t, brokenSpecJSON))
+		if len(next) != len(first) {
+			t.Fatalf("run %d: %d violations, want %d", i, len(next), len(first))
+		}
+		for j := range first {
+			if next[j] != first[j] {
+				t.Fatalf("run %d: order differs at %d: %q vs %q", i, j, next[j], first[j])
+			}
+		}
+	}
+	if !sort.StringsAreSorted(first) {
+		t.Errorf("violations not sorted: %v", first)
 	}
 }

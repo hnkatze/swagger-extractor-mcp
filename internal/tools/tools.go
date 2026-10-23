@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -79,6 +80,7 @@ func (r *Registry) Register(s *server.MCPServer) {
 	s.AddTool(searchSpecTool(), r.handleSearchSpec)
 	s.AddTool(listSchemasTool(), r.handleListSchemas)
 	s.AddTool(securitySchemesTool(), r.handleListSecuritySchemes)
+	s.AddTool(validateSpecTool(), r.handleValidateSpec)
 	s.AddTool(analyzeTagsTool(), r.handleAnalyzeTags)
 	s.AddTool(diffEndpointsTool(), r.handleDiffEndpoints)
 	s.AddTool(specStatusTool(), r.handleSpecStatus)
@@ -157,6 +159,14 @@ func listSchemasTool() mcp.Tool {
 func securitySchemesTool() mcp.Tool {
 	return mcp.NewTool("security_schemes",
 		mcp.WithDescription("Security scheme definitions (type, scheme, bearer format, apiKey location, OAuth flow URLs/scopes) with how many endpoints use each. Use after get_endpoint shows a security requirement."),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
+	)
+}
+
+func validateSpecTool() mcp.Tool {
+	return mcp.NewTool("validate_spec",
+		mcp.WithDescription("Validate a spec and report its real violations (the loader relaxes these so specs still load). Returns VALID/INVALID plus the violations."),
 		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
@@ -348,9 +358,32 @@ func getResolveDepth(req mcp.CallToolRequest) int {
 	return n
 }
 
-func (r *Registry) loadSpec(ctx context.Context, url string) (*openapi3.T, error) {
-	doc, _, err := r.loader.LoadFromURL(ctx, url)
+func (r *Registry) loadSpec(ctx context.Context, req mcp.CallToolRequest, url string) (*openapi3.T, error) {
+	doc, _, err := r.loader.LoadFromURL(r.progressCtx(ctx, req), url)
 	return doc, err
+}
+
+// progressCtx attaches a fetch heartbeat when the caller asked for progress
+// notifications. Without it a 60s fetch is indistinguishable from a hung call,
+// and MCP clients abort on their own per-request timeout instead of waiting.
+// It returns ctx unchanged when the client sent no progress token or when the
+// server is not reachable from ctx (tests, direct calls).
+func (r *Registry) progressCtx(ctx context.Context, req mcp.CallToolRequest) context.Context {
+	if req.Params.Meta == nil || req.Params.Meta.ProgressToken == nil {
+		return ctx
+	}
+	srv := server.ServerFromContext(ctx)
+	if srv == nil {
+		return ctx
+	}
+	token := req.Params.Meta.ProgressToken
+	return loader.WithProgress(ctx, func(elapsed time.Duration) {
+		_ = srv.SendNotificationToClient(ctx, "notifications/progress", map[string]any{
+			"progressToken": token,
+			"progress":      elapsed.Seconds(),
+			"message":       fmt.Sprintf("fetching spec, %ds elapsed", int(elapsed.Seconds())),
+		})
+	})
 }
 
 const errURLRequired = "url is required: pass url or call fetch_spec first to set a session default"
@@ -368,6 +401,7 @@ func (r *Registry) handleFetchSpec(ctx context.Context, req mcp.CallToolRequest)
 	}
 
 	refresh := getBoolArg(req, "refresh")
+	ctx = r.progressCtx(ctx, req)
 
 	var summary *types.SpecSummary
 	var err error
@@ -402,7 +436,7 @@ func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequ
 		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -466,7 +500,7 @@ func (r *Registry) handleGetEndpoint(ctx context.Context, req mcp.CallToolReques
 		return toolError(types.ErrEndpointNotFound, "method and path are required"), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -503,7 +537,7 @@ func (r *Registry) handleGetSchema(ctx context.Context, req mcp.CallToolRequest)
 		return toolError(types.ErrSchemaNotFound, "schema name is required"), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -540,7 +574,7 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 		return toolError(types.ErrInvalidQuery, "search query is required"), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -593,7 +627,7 @@ func (r *Registry) handleListSchemas(ctx context.Context, req mcp.CallToolReques
 		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -628,7 +662,7 @@ func (r *Registry) handleListSecuritySchemes(ctx context.Context, req mcp.CallTo
 		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -645,13 +679,52 @@ func (r *Registry) handleListSecuritySchemes(ctx context.Context, req mcp.CallTo
 	return mcp.NewToolResultText(output), nil
 }
 
+// maxReportedViolations caps the violations returned so a badly broken spec
+// cannot flood the context.
+const maxReportedViolations = 25
+
+func (r *Registry) handleValidateSpec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	url := r.resolveURL(req)
+	if url == "" {
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
+	}
+
+	doc, err := r.loadSpec(ctx, req, url)
+	if err != nil {
+		return toolError(types.ErrFetchFailed, err.Error()), nil
+	}
+
+	violations := loader.ValidateDocument(doc)
+	report := &types.ValidationReport{
+		Valid:          len(violations) == 0,
+		ViolationCount: len(violations),
+		Violations:     violations,
+		SpecVersion:    doc.OpenAPI,
+	}
+	if doc.Info != nil {
+		report.Title = doc.Info.Title
+	}
+	if len(violations) > maxReportedViolations {
+		report.Violations = violations[:maxReportedViolations]
+	}
+
+	if r.getFormat(req) == types.FormatTOON {
+		return mcp.NewToolResultText(formatter.FormatValidationTOON(report)), nil
+	}
+	output, fmtErr := formatter.FormatJSON(report)
+	if fmtErr != nil {
+		return toolError(types.ErrInternalError, fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(output), nil
+}
+
 func (r *Registry) handleAnalyzeTags(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	url := r.resolveURL(req)
 	if url == "" {
 		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -680,12 +753,12 @@ func (r *Registry) handleDiffEndpoints(ctx context.Context, req mcp.CallToolRequ
 		return toolError(types.ErrInvalidURL, "url_old and url_new are required"), nil
 	}
 
-	oldDoc, err := r.loadSpec(ctx, urlOld)
+	oldDoc, err := r.loadSpec(ctx, req, urlOld)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, "failed to load old spec: "+err.Error()), nil
 	}
 
-	newDoc, err := r.loadSpec(ctx, urlNew)
+	newDoc, err := r.loadSpec(ctx, req, urlNew)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, "failed to load new spec: "+err.Error()), nil
 	}
@@ -736,7 +809,7 @@ func (r *Registry) handleRefreshSpec(ctx context.Context, req mcp.CallToolReques
 		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
-	_, result, err := r.loader.ForceLoadFromURL(ctx, url)
+	_, result, err := r.loader.ForceLoadFromURL(r.progressCtx(ctx, req), url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
@@ -789,7 +862,7 @@ func (r *Registry) handleGenerateTypes(ctx context.Context, req mcp.CallToolRequ
 		return toolError(types.ErrInvalidFormat, "language must be 'typescript' or 'go'"), nil
 	}
 
-	doc, err := r.loadSpec(ctx, url)
+	doc, err := r.loadSpec(ctx, req, url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
