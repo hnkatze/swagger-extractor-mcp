@@ -28,6 +28,9 @@ const (
 	codeSpecNotFound  = "SPEC_NOT_FOUND"
 	codeSpecAmbiguous = "SPEC_AMBIGUOUS"
 	codeStoreError    = "STORE_ERROR"
+	// codeDiffNeedsSpecs reports a diff request the store cannot answer: fewer
+	// than two specs are indexed, so there is nothing to compare.
+	codeDiffNeedsSpecs = "DIFF_NEEDS_SPECS"
 )
 
 // indexCommand is the command a user must run to create or extend the index.
@@ -120,6 +123,16 @@ func (s *specSource) Close() error {
 // names returns the indexed spec names, ordered, so every error can list them
 // in the order a caller will see in `spec_status`.
 func (s *specSource) names() ([]string, error) {
+	metas, err := s.metas()
+	if err != nil {
+		return nil, err
+	}
+	return metaNames(metas), nil
+}
+
+// metas returns the store metadata of every indexed spec, ordered by name. It
+// reads the `specs` table only: discovery never loads a document (S5).
+func (s *specSource) metas() ([]store.SpecMeta, error) {
 	st, err := s.open()
 	if err != nil {
 		return nil, err
@@ -128,11 +141,23 @@ func (s *specSource) names() ([]string, error) {
 	if err != nil {
 		return nil, specErr(codeStoreError, "cannot list the indexed specs: %v", err)
 	}
+	return metas, nil
+}
+
+// metaNames projects metadata to the names, in store order.
+func metaNames(metas []store.SpecMeta) []string {
 	out := make([]string, 0, len(metas))
 	for _, meta := range metas {
 		out = append(out, meta.Name)
 	}
-	return out, nil
+	return out
+}
+
+// noSpecsIndexed is the error every tool reports when the store exists but holds
+// nothing: the fix is always the index command, never a query.
+func noSpecsIndexed(path string) error {
+	return specErr(codeNoStore,
+		"no specs are indexed in this project: run %s to add one (store: %s)", indexCommand, path)
 }
 
 // resolve turns the request's spec argument into exactly one indexed name:
@@ -155,8 +180,7 @@ func (s *specSource) resolve(req mcp.CallToolRequest, arg string) (string, error
 	}
 	switch len(names) {
 	case 0:
-		return "", specErr(codeNoStore,
-			"no specs are indexed in this project: run %s to add one (store: %s)", indexCommand, s.path)
+		return "", noSpecsIndexed(s.path)
 	case 1:
 		return names[0], nil
 	default:
@@ -317,17 +341,22 @@ func (e *cachedSpec) storedDocument() (*openapi3.T, error) {
 }
 
 // SpecStatusReport is what spec_status reports for one indexed spec: the store's
-// own record of where the spec came from and when it was read (S6 extends it).
+// own record of where the spec came from, when it was read, and whether that
+// copy is old enough to be worth refreshing (S6).
 type SpecStatusReport struct {
-	Name          string `json:"name"`
-	Source        string `json:"source"`
-	Title         string `json:"title"`
-	Version       string `json:"version"`
-	ETag          string `json:"etag"`
-	SHA256        string `json:"sha256"`
-	FetchedAt     string `json:"fetched_at"`
-	AgeSeconds    int64  `json:"age_seconds"`
-	EndpointCount int    `json:"endpoint_count"`
-	SchemaCount   int    `json:"schema_count"`
-	Store         string `json:"store"`
+	Name           string `json:"name"`
+	Source         string `json:"source"`
+	Title          string `json:"title"`
+	Version        string `json:"version"`
+	ETag           string `json:"etag"`
+	SHA256         string `json:"sha256"`
+	FetchedAt      string `json:"fetched_at"`
+	Age            string `json:"age"`
+	AgeSeconds     int64  `json:"age_seconds"`
+	Stale          bool   `json:"stale"`
+	StaleAfterDays int    `json:"stale_after_days"`
+	Refresh        string `json:"refresh"`
+	EndpointCount  int    `json:"endpoint_count"`
+	SchemaCount    int    `json:"schema_count"`
+	Store          string `json:"store"`
 }

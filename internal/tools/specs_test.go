@@ -31,8 +31,16 @@ func projectDir(t *testing.T) string {
 }
 
 // indexSpec writes raw into the project store under name, following the same
-// parse → normalize → store path the index command uses (S3).
+// parse → normalize → store path the index command uses (S3). The fetch time is
+// a fixed past instant, so a staleness test states its own (S6).
 func indexSpec(t *testing.T, name string, raw []byte) {
+	t.Helper()
+	indexSpecAt(t, name, raw, time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC))
+}
+
+// indexSpecAt is indexSpec with an explicit stored fetched_at, so staleness can
+// be controlled through the store instead of by sleeping a week.
+func indexSpecAt(t *testing.T, name string, raw []byte, fetchedAt time.Time) {
 	t.Helper()
 	dir, err := store.DirFor(".")
 	if err != nil {
@@ -54,7 +62,7 @@ func indexSpec(t *testing.T, name string, raw []byte) {
 	rec.Name = name
 	rec.Source = "fixture://" + name
 	rec.ETag = `"etag-` + name + `"`
-	rec.FetchedAt = time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	rec.FetchedAt = fetchedAt
 	if err := st.Put(rec); err != nil {
 		t.Fatalf("store fixture %q: %v", name, err)
 	}
@@ -335,7 +343,7 @@ func TestToolSurface_AddressesSpecsNeverURLs(t *testing.T) {
 				t.Errorf("%s still exposes %q: no query accepts a URL", def.tool.Name, param)
 			}
 		}
-		if def.tool.Name == "usage_guide" {
+		if def.tool.Name == "usage_guide" || def.tool.Name == "list_specs" {
 			continue
 		}
 		wanted := []string{"spec"}

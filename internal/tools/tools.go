@@ -70,6 +70,7 @@ type toolDef struct {
 // the CLI's job, so there is no fetch and no refresh tool (S3, S4).
 func (r *Registry) definitions() []toolDef {
 	return []toolDef{
+		{listSpecsTool(), r.handleListSpecs},
 		{listEndpointsTool(), r.handleListEndpoints},
 		{getEndpointTool(), r.handleGetEndpoint},
 		{getSchemaTool(), r.handleGetSchema},
@@ -96,6 +97,15 @@ func (r *Registry) Register(s *server.MCPServer) {
 
 const specArgDescription = "Indexed spec name written by `swagger-mcp index` (omit when the project has exactly one spec)"
 
+const allSpecsArgDescription = "true = sweep every indexed spec and prefix each line with its spec name (default false: one spec)"
+
+func listSpecsTool() mcp.Tool {
+	return mcp.NewTool("list_specs",
+		mcp.WithDescription("List every indexed spec with title, version, source, fetch time and counts. Start here when a call reports that several specs are indexed; then pass spec=<name> or all_specs=true to the discovery tools."),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
+	)
+}
+
 func listEndpointsTool() mcp.Tool {
 	return mcp.NewTool("list_endpoints",
 		mcp.WithDescription("List endpoints (METHOD path — summary [tags]) from the project's indexed spec. Run analyze_tags first, then filter by tag/method/path here. Auto-limited to 50; always filter rather than browse all."),
@@ -104,6 +114,7 @@ func listEndpointsTool() mcp.Tool {
 		mcp.WithString("method", mcp.Description("Filter by HTTP method")),
 		mcp.WithString("path_pattern", mcp.Description("Filter by path substring, e.g. '/users'")),
 		mcp.WithBoolean("deprecated", mcp.Description("true = only deprecated endpoints, false = only non-deprecated; omit for both")),
+		mcp.WithBoolean("all_specs", mcp.Description(allSpecsArgDescription)),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
@@ -136,6 +147,7 @@ func searchSpecTool() mcp.Tool {
 		mcp.WithDescription("Keyword search across paths, summaries, descriptions, operation IDs, and body field names. Ranked by relevance, auto-limited to 50. Use specific keywords."),
 		mcp.WithString("spec", mcp.Description(specArgDescription)),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query (case-insensitive)")),
+		mcp.WithBoolean("all_specs", mcp.Description(allSpecsArgDescription)),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
@@ -147,6 +159,7 @@ func listSchemasTool() mcp.Tool {
 		mcp.WithDescription("List component schemas with field count and usage (endpoints referencing each). Call get_schema with a name to see its fields. Auto-limited to 50; use filter to narrow."),
 		mcp.WithString("spec", mcp.Description(specArgDescription)),
 		mcp.WithString("filter", mcp.Description("Filter by schema name substring (case-insensitive)")),
+		mcp.WithBoolean("all_specs", mcp.Description(allSpecsArgDescription)),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
@@ -173,15 +186,16 @@ func analyzeTagsTool() mcp.Tool {
 	return mcp.NewTool("analyze_tags",
 		mcp.WithDescription("Tags with endpoint counts and method breakdown. START HERE to map the API, then filter list_endpoints by tag."),
 		mcp.WithString("spec", mcp.Description(specArgDescription)),
+		mcp.WithBoolean("all_specs", mcp.Description(allSpecsArgDescription)),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
 
 func diffEndpointsTool() mcp.Tool {
 	return mcp.NewTool("diff_endpoints",
-		mcp.WithDescription("Compare two indexed specs: added, removed, changed endpoints."),
-		mcp.WithString("spec_old", mcp.Description("Old spec name (omit for the only indexed spec)")),
-		mcp.WithString("spec_new", mcp.Description("New spec name (omit for the only indexed spec)")),
+		mcp.WithDescription("Compare two indexed specs: added, removed, changed endpoints. Needs two indexed specs, named explicitly."),
+		mcp.WithString("spec_old", mcp.Description("Old spec name (required; run list_specs to see the names)")),
+		mcp.WithString("spec_new", mcp.Description("New spec name (required)")),
 		mcp.WithString("path", mcp.Description("Filter by path substring")),
 		mcp.WithString("method", mcp.Description("Filter by HTTP method")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
@@ -190,7 +204,7 @@ func diffEndpointsTool() mcp.Tool {
 
 func specStatusTool() mcp.Tool {
 	return mcp.NewTool("spec_status",
-		mcp.WithDescription("Index status without fetching: which specs are indexed, their source, fingerprint, fetch time and counts. Read-only."),
+		mcp.WithDescription("Index status without fetching: source, etag, fetch time, age, a stale verdict (older than 7 days) and the exact `swagger-mcp index --refresh` command. Read-only: it never refreshes."),
 		mcp.WithString("spec", mcp.Description(specArgDescription)),
 	)
 }
@@ -350,12 +364,7 @@ func getResolveDepth(req mcp.CallToolRequest) int {
 // document resolves the addressed spec from the local index and returns its
 // parsed document, or the tool result that reports why it could not.
 func (r *Registry) document(req mcp.CallToolRequest) (*openapi3.T, *mcp.CallToolResult) {
-	return r.documentFor(req, "spec")
-}
-
-// documentFor is document for tools that address two specs (diff_endpoints).
-func (r *Registry) documentFor(req mcp.CallToolRequest, arg string) (*openapi3.T, *mcp.CallToolResult) {
-	name, err := r.specs.resolve(req, arg)
+	name, err := r.specs.resolve(req, "spec")
 	if err != nil {
 		return nil, specToolError(err)
 	}
@@ -384,6 +393,9 @@ func toolError(code, message string) *mcp.CallToolResult {
 // --- Handlers ---
 
 func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if getBoolArg(req, "all_specs") {
+		return r.handleListEndpointsAllSpecs(req)
+	}
 	doc, errResult := r.document(req)
 	if errResult != nil {
 		return errResult, nil
@@ -502,6 +514,9 @@ func (r *Registry) handleGetSchema(ctx context.Context, req mcp.CallToolRequest)
 }
 
 func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if getBoolArg(req, "all_specs") {
+		return r.handleSearchSpecAllSpecs(req)
+	}
 	doc, errResult := r.document(req)
 	if errResult != nil {
 		return errResult, nil
@@ -555,6 +570,9 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (r *Registry) handleListSchemas(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if getBoolArg(req, "all_specs") {
+		return r.handleListSchemasAllSpecs(req)
+	}
 	doc, errResult := r.document(req)
 	if errResult != nil {
 		return errResult, nil
@@ -641,6 +659,9 @@ func (r *Registry) handleValidateSpec(ctx context.Context, req mcp.CallToolReque
 }
 
 func (r *Registry) handleAnalyzeTags(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if getBoolArg(req, "all_specs") {
+		return r.handleAnalyzeTagsAllSpecs(req)
+	}
 	doc, errResult := r.document(req)
 	if errResult != nil {
 		return errResult, nil
@@ -664,13 +685,41 @@ func (r *Registry) handleAnalyzeTags(ctx context.Context, req mcp.CallToolReques
 }
 
 func (r *Registry) handleDiffEndpoints(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	oldDoc, errResult := r.documentFor(req, "spec_old")
-	if errResult != nil {
-		return errResult, nil
+	// A diff is between two specs, never between a spec and itself: resolving an
+	// omitted name to "the only spec" used to answer "No differences" for every
+	// request. Both sides must be named, and the store must hold two specs.
+	metas, err := r.specs.metas()
+	if err != nil {
+		return specToolError(err), nil
 	}
-	newDoc, errResult := r.documentFor(req, "spec_new")
-	if errResult != nil {
-		return errResult, nil
+	if len(metas) < 2 {
+		return specToolError(specErr(codeDiffNeedsSpecs,
+			"diff_endpoints compares two indexed specs: %s; run %s to index another one",
+			indexedCount(len(metas), metaNames(metas)), indexCommand)), nil
+	}
+
+	names := metaNames(metas)
+	oldName := strings.TrimSpace(getStringArg(req, "spec_old"))
+	newName := strings.TrimSpace(getStringArg(req, "spec_new"))
+	if oldName == "" || newName == "" {
+		return specToolError(specErr(codeSpecAmbiguous,
+			"diff_endpoints needs both names: several specs are indexed (%s); pass spec_old=<name> and spec_new=<name>",
+			strings.Join(names, ", "))), nil
+	}
+	for _, name := range []string{oldName, newName} {
+		if !containsName(names, name) {
+			return specToolError(specErr(codeSpecNotFound,
+				"spec %q is not indexed; indexed specs: %s", name, strings.Join(names, ", "))), nil
+		}
+	}
+
+	oldDoc, err := r.specs.document(oldName)
+	if err != nil {
+		return specToolError(err), nil
+	}
+	newDoc, err := r.specs.document(newName)
+	if err != nil {
+		return specToolError(err), nil
 	}
 
 	filterPath := getStringArg(req, "path")
@@ -707,18 +756,30 @@ func (r *Registry) handleSpecStatus(ctx context.Context, req mcp.CallToolRequest
 		return specToolError(err), nil
 	}
 
+	// Staleness is a judgement about the stored copy, computed from its own
+	// fetched_at: nothing here contacts the source (S6).
+	age := time.Since(meta.FetchedAt)
+	if age < 0 {
+		age = 0
+	}
+	stale := age > staleAfter
+
 	report := &SpecStatusReport{
-		Name:          meta.Name,
-		Source:        meta.Source,
-		Title:         meta.Title,
-		Version:       meta.Version,
-		ETag:          meta.ETag,
-		SHA256:        meta.SHA256,
-		FetchedAt:     meta.FetchedAt.UTC().Format(time.RFC3339),
-		AgeSeconds:    int64(time.Since(meta.FetchedAt).Seconds()),
-		EndpointCount: meta.EndpointCount,
-		SchemaCount:   meta.SchemaCount,
-		Store:         r.specs.Path(),
+		Name:           meta.Name,
+		Source:         meta.Source,
+		Title:          meta.Title,
+		Version:        meta.Version,
+		ETag:           meta.ETag,
+		SHA256:         meta.SHA256,
+		FetchedAt:      meta.FetchedAt.UTC().Format(time.RFC3339),
+		Age:            humanAge(age),
+		AgeSeconds:     int64(age.Seconds()),
+		Stale:          stale,
+		StaleAfterDays: int(staleAfter.Hours()) / 24,
+		Refresh:        refreshCommand(meta.Source),
+		EndpointCount:  meta.EndpointCount,
+		SchemaCount:    meta.SchemaCount,
+		Store:          r.specs.Path(),
 	}
 
 	output, err := formatter.FormatJSON(report)

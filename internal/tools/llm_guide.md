@@ -22,12 +22,17 @@ you to run `swagger-mcp index`.
 - One indexed spec: omit `spec`, the tools use it automatically.
 - Several indexed specs: pass `spec=<name>`, the name the indexer stored (by
   default the file or URL base name, e.g. `petstore`).
-- `spec_status` shows what is indexed: name, source, etag, sha256, fetch time and
-  counts. Start there when a call reports that several specs are indexed.
+- `list_specs` lists every indexed spec with its title, version, source, fetch
+  time and counts. Start there when a call reports that several specs are indexed.
+- `list_endpoints`, `search_spec`, `analyze_tags` and `list_schemas` accept
+  `all_specs=true` to sweep every indexed spec at once; each result line is then
+  prefixed with the spec name (`petstore: GET /pets — ...`). Omit it unless you
+  really want the whole store: it is the most expensive call shape.
 
 ## Workflow
 
-0. `spec_status` — which specs are indexed, their source and fetch time.
+0. `list_specs` (or `spec_status`) — what is indexed, where it came from and how
+   old it is.
 1. `analyze_tags` — maps the API into tags with endpoint counts so you know where
    to look.
 2. `list_endpoints` — filter by `tag` (preferred), `method`, `path_pattern`, or
@@ -57,7 +62,13 @@ ApiKey` means either one works, not both.
 violations). Use it when you are authoring or reviewing a spec, not when
 consuming one.
 
-`diff_endpoints` compares two indexed specs (`spec_old`, `spec_new`).
+`diff_endpoints` compares two indexed specs. Both `spec_old` and `spec_new` are
+required, and the project must index at least two specs: a diff is never run
+against a spec itself.
+
+`spec_status` reports one spec's stored source, etag, fetch time, age and an
+explicit `stale` verdict (older than 7 days). It never refreshes anything: the
+`refresh` field carries the exact command a user must run.
 
 ## Reading the output (TOON)
 
@@ -90,7 +101,7 @@ consuming one.
 
 **"What can this API do with employees?"**
 ```
-spec_status()                              → which spec is indexed, and its counts
+list_specs()                               → which spec(s) are indexed, and their counts
 analyze_tags()                             → see an "Employee" tag, 40 endpoints
 list_endpoints(tag="Employee")             → the 40 endpoints, one line each
 get_endpoint("POST", "/api/v1/Employee")   → full request/response shape
@@ -117,8 +128,14 @@ generate_types(tag="Orders", language="typescript")   → every schema that tag 
 
 **"Is the indexed copy current?"**
 ```
-spec_status()   → source, etag, fetch time and age; `swagger-mcp index --refresh <src>`
-                  is how a user updates it, never a query
+spec_status()   → source, etag, fetch time, age, stale yes/no; the `refresh`
+                  field is the `swagger-mcp index --refresh <src>` command a user
+                  runs, never a query
+```
+
+**"Which specs does this project index?"**
+```
+list_specs()                        → name, title, version, source, fetched_at, counts
 ```
 
 ## Anti-patterns
@@ -126,6 +143,9 @@ spec_status()   → source, etag, fetch time and age; `swagger-mcp index --refre
 - Don't `list_endpoints` without filters on a large API — it wastes tokens.
 - Don't `get_endpoint` every endpoint to "look around" — narrow with tags/search.
 - Don't expand every `$ref(Name)` — only the ones whose fields you actually need.
-- Don't guess a spec name — `spec_status` lists the indexed names.
+- Don't guess a spec name — `list_specs` and `spec_status` list the indexed names.
+- Don't reach for `all_specs=true` as a default — it parses every stored spec, so
+  use it to locate a thing across projects, then go back to `spec=<name>`.
+- Don't ask for a diff when only one spec is indexed — `diff_endpoints` needs two.
 - Don't raise `resolve_depth` to 10 by reflex — the default of 3 is enough for
   most models, and the dedup keeps shared schemas from repeating anyway.
