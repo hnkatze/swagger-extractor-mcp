@@ -31,8 +31,12 @@ checksum:
 changelog:
   sort: asc
   filters:
+    # Conventional-commit types, with or without a scope: "docs: x" and
+    # "docs(odd): x" must both be excluded. The previous patterns were
+    # "^docs:" and friends, which only matched the unscoped form, so scoped
+    # docs/chore/test commits leaked into the release notes.
     exclude:
-      - "^docs:"
-      - "^chore:"
-      - "^style:"
-      - "^test:"
+      - "^docs(\\([^)]*\\))?!?:"
+      - "^chore(\\([^)]*\\))?!?:"
+      - "^style(\\([^)]*\\))?!?:"
+      - "^test(\\([^)]*\\))?!?:"
