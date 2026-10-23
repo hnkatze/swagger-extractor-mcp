@@ -1,6 +1,9 @@
 # swagger-mcp
 
-A Model Context Protocol (MCP) server that provides granular access to OpenAPI/Swagger specifications. Built for LLM-powered development workflows — query endpoints, schemas, and diffs without leaving your editor.
+A local index for OpenAPI/Swagger specs plus an MCP query layer on top of it.
+Index a spec once into `./swa-mcp/swa-mcp.db` inside your project, and every MCP
+tool answers from that SQLite file — no server, no hosting, no auth, no key. The
+specs never leave your machine.
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![MCP](https://img.shields.io/badge/MCP-stdio-blueviolet)](https://modelcontextprotocol.io)
@@ -8,85 +11,44 @@ A Model Context Protocol (MCP) server that provides granular access to OpenAPI/S
 
 ## Why?
 
-Large APIs can have hundreds of endpoints. When building a frontend module, you need to understand request/response shapes, required fields, auth schemes, and error codes — scattered across a massive Swagger UI.
+Large APIs have hundreds of endpoints. To build one frontend module you need
+request/response shapes, required fields, auth schemes and error codes that are
+scattered across a giant Swagger UI — and a naive LLM reading the whole document
+burns tens of thousands of tokens on things it never uses.
 
-**swagger-mcp** gives your LLM direct access to the spec so it can:
+`swagger-mcp` is to OpenAPI what a code graph is to source: one explicit indexing
+step, then cheap structured queries.
 
-- Fetch and cache any OpenAPI 2.0/3.x spec from a URL
-- List and filter endpoints by tag, method, or path
-- Extract full endpoint details with all `$ref` pointers resolved
-- Pull individual schemas with nested references expanded
-- Search across paths, summaries, descriptions, and parameters
-- Compare two spec versions to see what changed
-- Check cache status without making HTTP requests
+- **Local by default.** One SQLite store per project, written by the CLI. Queries
+  read the store and never touch the network.
+- **No infrastructure.** A static binary per platform; nothing to deploy, no
+  token to rotate, nothing to trust with your private spec.
+- **Token-optimized by default.** Compact TOON output, auto-limiting and guided
+  tool descriptions keep explorations small instead of dumping whole documents.
+- **Multi-spec.** Index several specs side by side, address them by name, sweep
+  all of them, or diff two of them.
 
-All output is **token-optimized by default** using TOON format (~40% fewer tokens than JSON), with auto-limiting and guided tool descriptions that reduce typical workflows from ~41K tokens to ~1.3K tokens.
+## Quickstart
 
-## Tools
-
-| Tool | Description |
-|------|-------------|
-| `fetch_spec` | Download and cache a spec and make it the session default. Returns title, version, endpoint/tag/schema counts. `refresh=true` bypasses the cache. |
-| `analyze_tags` | Tag summary with endpoint counts and method breakdown. **Start here** to understand the API. |
-| `list_endpoints` | List endpoints with filters (`tag`, `method`, `path_pattern`, `deprecated`). Page with `limit`/`offset`; the header shows the range and next offset. |
-| `get_endpoint` | Full detail for one endpoint — params, request body, responses, resolved schemas (field descriptions inline; repeats shown as `$ref(Name)`). |
-| `get_schema` | Get a named schema with nested `$ref` resolved. Use to expand a `$ref(Name)` seen in `get_endpoint`. |
-| `list_schemas` | Component schemas with field count and how many endpoints use each, sorted by usage. This is how you find models without guessing names. |
-| `search_spec` | Full-text search across paths, summaries, operation IDs, parameters, and body properties. Auto-limited to 50, supports `offset`. |
-| `security_schemes` | Auth scheme definitions (http bearer/apiKey/OAuth2/OIDC), their headers or flow URLs, and usage counts. A requirement list is an OR of alternatives, not an AND. |
-| `validate_spec` | Report VALID/INVALID with a deterministic list of violations. For authoring a spec, not consuming one. |
-| `diff_endpoints` | Compare two spec versions. Shows added, removed, and changed endpoints. |
-| `spec_status` | Check cache status (memory/disk), fingerprint, age, ETag. No HTTP requests. |
-| `refresh_spec` | Force-refresh a cached spec. Returns change detection via fingerprint comparison. A failed refresh leaves the cached copy intact. |
-| `generate_types` | Generate TypeScript interfaces or Go structs from an endpoint, a named schema, or a whole `tag`. |
-| `usage_guide` | Return this server's workflow, token-saving rules, output notation, and example call sequences. The LLM can call it to self-orient when it lacks setup context. |
-
-`url` is optional on every read tool: `fetch_spec` makes the URL it fetched the
-session default, and `SWAGGER_MCP_DEFAULT_URL` seeds it at startup.
-
-### Recommended Workflow
-
-For large APIs, the tools guide the LLM toward an efficient pattern:
-
-```
-1. analyze_tags     → Understand API structure (~500 tokens)
-2. list_endpoints   → Filter by tag/method (~200 tokens)
-3. get_endpoint     → Full details for one endpoint (~500 tokens)
-                      Total: ~1,200 tokens vs ~41,000+ without filters
-```
-
-### Parameters
-
-All tools accept `format`: `toon` (default, compact) or `json`.
-
-`list_endpoints` and `search_spec` also accept `limit` (default: 50, 0 = unlimited).
-
-`get_endpoint` and `get_schema` accept `resolve_depth` (0-10, default: 3). Raise it for deeply nested models; lower it (or 0 = names only) to cut tokens further.
-
-## Installation
-
-### Option 1: Go Install (requires Go 1.25+)
+### 1. Install
 
 ```bash
+# Go 1.25+
 go install github.com/hnkatze/swagger-mcp-go/cmd/swagger-mcp@latest
 ```
 
-The binary will be placed in `$GOPATH/bin` (usually `~/go/bin`). Make sure it's on your `PATH`.
-
-### Option 2: Download Binary
-
-Download the latest release for your platform from [GitHub Releases](https://github.com/hnkatze/swagger-mcp-go/releases).
+Or take the release asset for your platform from
+[GitHub Releases](https://github.com/hnkatze/swagger-mcp-go/releases):
 
 ```bash
-# Linux / macOS
-tar -xzf swagger-mcp_<version>_<os>_<arch>.tar.gz
+# Linux / macOS — archives are swagger-mcp_<version>_<os>_<arch>.tar.gz
+tar -xzf swagger-mcp_<version>_linux_amd64.tar.gz
 sudo mv swagger-mcp /usr/local/bin/
 
-# Windows
-# Extract the .zip and add the directory to your PATH
+# Windows — extract the .zip and put swagger-mcp.exe on your PATH
 ```
 
-### Option 3: Build from Source
+From source:
 
 ```bash
 git clone https://github.com/hnkatze/swagger-mcp-go.git
@@ -94,17 +56,32 @@ cd swagger-mcp-go
 go build -o swagger-mcp ./cmd/swagger-mcp/
 ```
 
-## Configuration
+### 2. Index your spec(s)
 
-### Claude Code (CLI)
+Run this in the project that will query the API:
 
 ```bash
-claude mcp add swagger-mcp --transport stdio -- swagger-mcp
+cd ~/proyectos/my-app
+swagger-mcp index https://api.example.com/openapi.json
+# indexed openapi: Example API 1.2.0 (43 endpoints, 17 schemas)
+# store: /home/you/proyectos/my-app/swa-mcp/swa-mcp.db
 ```
 
-### Claude Code (.mcp.json)
+Sources can be URLs or local files, and you can pass several at once:
 
-Add to your project root or `~/.claude/.mcp.json`:
+```bash
+swagger-mcp index ./openapi.yaml https://api.example.com/openapi.json
+```
+
+The command creates `./swa-mcp/swa-mcp.db` if it does not exist. Nothing else
+writes to that file.
+
+### 3. Register the MCP server
+
+The server reads the store it finds from its working directory, so register it
+**per project** (cwd = project root) with no arguments.
+
+Claude Code — `.mcp.json` in the project root (or `~/.claude/.mcp.json`):
 
 ```json
 {
@@ -118,23 +95,7 @@ Add to your project root or `~/.claude/.mcp.json`:
 }
 ```
 
-If the binary is not on your `PATH`, use the full path:
-
-```json
-{
-  "mcpServers": {
-    "swagger-mcp": {
-      "type": "stdio",
-      "command": "/path/to/swagger-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-### Claude Desktop
-
-Add to your `claude_desktop_config.json`:
+Claude Desktop — `claude_desktop_config.json`:
 
 ```json
 {
@@ -147,81 +108,199 @@ Add to your `claude_desktop_config.json`:
 }
 ```
 
-## Usage Examples
+If the binary is not on your `PATH`, use its absolute path as `command`. On
+startup the server logs the store it resolved to stderr, so a wrong working
+directory is visible instead of silent:
 
-Once configured, the tools are available to the LLM automatically. You interact naturally:
-
-### Explore an API
-
-> "Fetch the spec at https://petstore.swagger.io/v2/swagger.json and tell me what's in it"
-
-The LLM calls `fetch_spec` and returns a summary with endpoint count, tags, and schemas.
-
-### Investigate a Module
-
-> "List all endpoints tagged 'pet' and show me the POST /pet details"
-
-The LLM calls `analyze_tags` to discover tags, then `list_endpoints` filtered by tag, then `get_endpoint` for the full request/response shape.
-
-### Search for Something Specific
-
-> "Search for anything related to 'authentication' in the spec"
-
-The LLM calls `search_spec` and returns matching endpoints ranked by relevance, auto-limited to 50 results.
-
-### Compare API Versions
-
-> "What changed between v1 and v2 of this API?"
-
-The LLM calls `diff_endpoints` with both spec URLs and reports added, removed, and changed endpoints.
-
-### Build a Frontend Module
-
-> "I need to build the user management module. What endpoints and schemas should I know about?"
-
-The LLM calls `analyze_tags` + `list_endpoints` + `get_endpoint` + `get_schema` to map out the full data model, dependencies, and API contract.
-
-## LLM Context Guide
-
-Add this snippet to your `CLAUDE.md`, `.cursorrules`, or system prompt to help your LLM use swagger-mcp efficiently:
-
-```markdown
-## API Exploration (swagger-mcp)
-
-When working with external APIs via swagger-mcp:
-
-### Workflow
-1. `fetch_spec` with the spec URL (only needed once per session)
-2. `analyze_tags` to understand the API structure — always start here
-3. `list_endpoints` with tag/method/path filters to find relevant endpoints
-4. `get_endpoint` for full details on a specific endpoint
-5. `generate_types` to get TypeScript interfaces or Go structs ready to use
-6. `get_schema` when you need a specific model's structure
-
-### Rules
-- Always filter by tag before listing endpoints on large APIs
-- Use `search_spec` to find endpoints by keyword (searches paths, summaries, params, and body properties)
-- If the API spec has changed, use `refresh_spec` to get fresh data
-- Default output is TOON format (compact, token-efficient) — use format=json only when needed
-- Use `generate_types` with language=typescript or language=go instead of manually translating schemas
-- Schemas show field descriptions inline (`field*: type — description`); a `*` marks a required field
-- A repeated schema appears once, then as `$ref(Name)` — call `get_schema Name` only if you need its fields expanded
-- Schemas resolve 3 levels deep by default; pass `resolve_depth` up to 10 for deeper models
-
-### Anti-patterns
-- Don't call `list_endpoints` without filters on large APIs (wastes tokens)
-- Don't call `get_endpoint` for every endpoint — narrow down with tags/search first
-- Don't re-fetch specs that are already cached — use `spec_status` to check
-- Don't expand every `$ref(Name)` — only fetch the ones whose fields you actually need
+```
+[swagger-mcp] 2026/02/10 09:11:02 store: /home/you/proyectos/my-app/swa-mcp/swa-mcp.db
 ```
 
-For **Cursor**, add the same content to `.cursorrules`. For **Windsurf** or other MCP clients, add it to your system prompt or project instructions file.
+### 4. The first three calls
 
-## Output Formats
+| Call | Answers |
+|------|---------|
+| `list_specs` | What is indexed: name, title, version, source, fetch time, endpoint/schema counts. |
+| `list_endpoints` | The endpoints, one line each — `GET /pets — List all pets [pets]`. Filter by `tag`, `method`, `path_pattern`, `deprecated`. |
+| `get_endpoint` | One endpoint in full: parameters, request body, responses, resolved schemas. |
+
+A minimal, cheap sequence:
+
+```
+list_specs()                                      → the indexed specs and their counts
+analyze_tags()                                    → tags with endpoint counts; pick one
+list_endpoints(tag="pets")                        → one line per endpoint in that tag
+get_endpoint(method="GET", path="/pets/{petId}")  → params, body, responses
+```
+
+## The store
+
+```
+my-app/
+└── swa-mcp/
+    └── swa-mcp.db      # SQLite: the whole index for this project
+```
+
+- **One file per project.** The store belongs to the project that queries it, and
+  `internal/store` keeps a single writer per file, so it is not a shared
+  multi-tenant database.
+- **Created by the indexer, never by hand.** A query that finds no store fails
+  with `NO_STORE` instead of creating one.
+- **Discovery walks up.** Starting from the working directory, the server and the
+  indexer use the nearest `swa-mcp/` directory it finds above it, falling back to
+  `<cwd>/swa-mcp`.
+- **`SWA_MCP_DIR` overrides discovery** with an explicit store directory (useful
+  for a shared or out-of-tree index).
+- **Gitignored.** `swa-mcp/` is in this repo's `.gitignore`; add the same entry to
+  yours. The index is generated state, not source.
+
+### Reindexing
+
+```bash
+swagger-mcp index https://api.example.com/openapi.json          # idempotent
+swagger-mcp index --refresh https://api.example.com/openapi.json # force a rewrite
+swagger-mcp index --name petstore-v3 ./openapi.json             # pin the spec name
+```
+
+- Reindexing the same source updates the existing row in place — it never
+  duplicates a spec.
+- Without `--refresh`, an unchanged document is reported and **not** rewritten:
+
+  ```
+  unchanged openapi: Example API 1.2.0 (content identical, use --refresh to rewrite)
+  ```
+
+- `--refresh` re-reads the source and rewrites the stored copy (and its
+  `fetched_at`), even when the content is identical.
+- `--name` sets the addressable name instead of the derived one. It accepts a
+  single source only. The default name is the base name of the file or URL path
+  without `.json`/`.yaml`/`.yml` (a URL with no path falls back to the hostname).
+
+Indexing validates first: a spec that fails validation is rejected and nothing is
+written. It is validated with the same relaxed rules the query layer uses, so a
+spec you can index is a spec you can query.
+
+## Tools
+
+All answers come from the store. There is no fetch tool and no refresh tool —
+indexing is a CLI command.
+
+| Tool | What it answers | Parameters |
+|------|-----------------|------------|
+| `list_specs` | Every indexed spec with title, version, source, fetch time and counts. Start here when a call says several specs are indexed. | `format` |
+| `list_endpoints` | Endpoints, one line each with method, path, summary and tags. | `spec`, `tag`, `method`, `path_pattern`, `deprecated`, `all_specs`, `limit`, `offset`, `format` |
+| `get_endpoint` | One endpoint in full: params, request body, responses, resolved schemas. Shared schemas are shown once then referenced as `$ref(Name)`. | `spec`, `method`*, `path`*, `resolve_depth`, `format` |
+| `get_schema` | A named schema/model with field types and descriptions. Use it to expand a `$ref(Name)` from `get_endpoint`. | `spec`, `name`*, `resolve_depth`, `format` |
+| `search_spec` | Keyword search across paths, summaries, descriptions, operation IDs and body field names, ranked by relevance. | `spec`, `query`*, `all_specs`, `limit`, `offset`, `format` |
+| `list_schemas` | Component schemas with field count and how many endpoints use each. | `spec`, `filter`, `all_specs`, `limit`, `offset`, `format` |
+| `security_schemes` | Auth scheme definitions (http/bearer/apiKey/OAuth2/OIDC) with how many endpoints use each. A requirement list is an OR of alternatives. | `spec`, `format` |
+| `validate_spec` | VALID/INVALID plus the spec's real violations, reported exactly as the document wrote them. | `spec`, `format` |
+| `analyze_tags` | Tags with endpoint counts and method breakdown — the map of the API. | `spec`, `all_specs`, `format` |
+| `diff_endpoints` | Added, removed and changed endpoints between two indexed specs. | `spec_old`*, `spec_new`*, `path`, `method`, `format` |
+| `spec_status` | Source, etag, fetch time, age, a stale verdict and the exact refresh command. Read-only; always JSON. | `spec` |
+| `generate_types` | Copy-paste-ready TypeScript interfaces or Go structs from a tag, a named schema, or an endpoint. | `spec`, `tag`, `method`, `path`, `schema`, `language`, `format` |
+| `usage_guide` | This server's workflow, token rules, output notation and example sequences, for an LLM that lacks setup context. | — |
+
+`*` = required.
+
+### Addressing a spec
+
+`spec` selects one indexed spec by the name the indexer stored.
+
+- **One spec indexed** — omit `spec`; that spec is used.
+- **Several indexed, no `spec`** — the call fails with `SPEC_AMBIGUOUS` and the
+  message lists the names. It never guesses.
+- **Unknown name** — the call fails with `SPEC_NOT_FOUND`, and the same list of
+  indexed names is returned so the caller can correct itself.
+- **Nothing indexed** — the call fails with `NO_STORE` and names
+  `swagger-mcp index`.
+- No tool accepts a `url`. Addressing is by name, never by URL.
+
+### Sweeping every spec
+
+`list_endpoints`, `search_spec`, `list_schemas` and `analyze_tags` accept
+`all_specs=true`, which reads every indexed spec and prefixes each result line
+with the spec it came from (`petstore: GET /pets — ...`). It is the most
+expensive call shape; prefer `spec=<name>` unless you really want the whole store.
+
+### Parameter details
+
+- `format` — `toon` (default, compact) or `json`. `spec_status` is always JSON and
+  `usage_guide` takes no arguments.
+- `limit` / `offset` — on `list_endpoints`, `search_spec` and `list_schemas`.
+  `limit` defaults to 50 and `0` means unlimited; `offset` defaults to 0. The
+  result header shows what you got and the next offset, so page instead of
+  raising the limit.
+- `resolve_depth` — on `get_endpoint` and `get_schema`: schema nesting depth
+  `0`–`10`, default `3`. `0` = names only (cheapest); raise it for deep models.
+- `deprecated` — on `list_endpoints`: `true` = only deprecated, `false` = only
+  live endpoints, omit for both.
+
+## Staleness
+
+`spec_status` reports what the store knows about one spec — no network access:
+
+```json
+{
+  "name": "openapi",
+  "source": "https://api.example.com/openapi.json",
+  "etag": "\"abc123\"",
+  "fetched_at": "2026-02-10T09:11:02Z",
+  "age": "9d3h",
+  "age_seconds": 795420,
+  "stale": true,
+  "stale_after_days": 7,
+  "refresh": "swagger-mcp index --refresh https://api.example.com/openapi.json",
+  "endpoint_count": 43,
+  "schema_count": 17,
+  "store": "/home/you/proyectos/my-app/swa-mcp/swa-mcp.db"
+}
+```
+
+Keys and the `stale_after_days` value are exact; the values are an illustration.
+
+A stored copy older than **7 days** is reported as `stale: true`. Nothing is
+refreshed automatically: `spec_status` is read-only, no tool fetches anything, and
+the `refresh` field carries the exact command a human runs. Reindexing is always
+explicit.
+
+## Errors you may hit
+
+Failures come back as tool errors prefixed with a stable code.
+
+| Code | Meaning | What to do |
+|------|---------|------------|
+| `NO_STORE` | No store in this project, or an empty one — the message names the path it looked for. | Run `swagger-mcp index <url\|file>` in this project; check the client's working directory (the server logs the store it resolved). |
+| `SPEC_AMBIGUOUS` | Several specs are indexed and no `spec` was passed. The message lists them. | Pass `spec=<name>` (names come from `list_specs`), or `all_specs=true` to sweep. |
+| `SPEC_NOT_FOUND` | The requested name is not indexed. The message lists the indexed names. | Retry with one of the listed names, or index the spec you meant. |
+| `DIFF_NEEDS_SPECS` | Fewer than two specs are indexed, so there is nothing to compare. | `swagger-mcp index` the second spec (or the older version), then diff by name. |
+| `STORE_ERROR` | The store exists but cannot be opened or read — permissions, a corrupt file, or a store written by a newer schema version. | Fix access to `swa-mcp/`, or upgrade `swagger-mcp` if the store reports a newer schema version. Removing `swa-mcp/` and reindexing rebuilds the store. |
+
+## Migration from v0.7.0
+
+v0.7.0 fetched specs on demand: the `fetch_spec` tool downloaded a URL and made it
+the session default, every read tool accepted a `url` parameter, and
+`SWAGGER_MCP_DEFAULT_URL` seeded that default at startup.
+
+`fetch_spec`, `refresh_spec`, the `url` parameter and that environment variable
+are all gone. Indexing is an explicit command,
+and queries are addressed by the name of an indexed spec:
+
+```bash
+# before: the LLM fetched a URL to start a session
+# now:
+swagger-mcp index https://api.example.com/openapi.json
+```
+
+Then drop any `url` arguments and the old default-URL variable from your client
+config. Pass `spec=<name>` only when the project indexes more than one spec.
+
+## Output formats
 
 ### TOON (default)
 
-Token-Optimized Object Notation — a compact, human-readable format that reduces token usage by ~40% compared to JSON:
+Token-Optimized Object Notation — compact and readable, and cheaper per response
+than indented JSON.
 
 ```
 # showing 50 of 790 — use tag/method/path_pattern filters to narrow results
@@ -245,182 +324,129 @@ responses:
   404: Pet not found
 ```
 
-Key conventions:
+Conventions:
+
 - `*` marks required fields
 - Types use compact notation: `string(email)`, `[]Pet`, `enum(active, inactive)`
-- List views strip description (summary is enough for browsing)
-- Truncated results show a metadata header with filter guidance
-- Diff output uses `+` (added), `-` (removed), `~` (changed) prefixes
+- List views strip descriptions — the summary is enough for browsing
+- A shared schema is shown once, then referenced as `$ref(Name)`
+- Truncated lists start with a metadata header and the next offset
+- Diffs use `+` (added), `-` (removed), `~` (changed)
 
 ### JSON
 
-Standard indented JSON output. Use `format=json` when you need programmatic consumption. List/search responses include truncation metadata:
+Standard indented JSON for programmatic consumption (`format=json`). List answers
+carry truncation metadata:
 
 ```json
 {
   "total": 790,
   "showing": 50,
+  "offset": 0,
   "truncated": true,
   "endpoints": [...]
 }
 ```
 
-## Caching
-
-swagger-mcp uses a two-level cache for fast spec access:
-
-### L1: In-Memory LRU
-
-- TTL: 5 minutes
-- Max entries: 20 specs
-- Instant access within a session
-
-### L2: Disk Cache
-
-- Location: `~/.swagger-mcp/cache/`
-- TTL: 24 hours
-- Max entries: 50 specs
-- Persists across sessions
-- SHA-256 filenames for safe storage
-- Atomic writes prevent corruption
-
-### HTTP Conditional Requests
-
-When disk-cached data is stale, swagger-mcp sends conditional HTTP requests using `ETag`/`If-None-Match` and `Last-Modified`/`If-Modified-Since`. If the server returns `304 Not Modified`, the cached data is reused without re-downloading.
-
-### Cache Hierarchy
-
-```
-Request → L1 Memory (hit? return)
-        → L2 Disk (fresh? promote to L1, return)
-        → Conditional HTTP (304? refresh L2, promote to L1, return)
-        → Full HTTP fetch (update L1 + L2, return)
-```
-
-### Fallback Behavior
-
-- Disk errors: graceful degradation to memory-only cache
-- Network errors: fall back to stale disk data
-- HTTP 4xx: error (no stale data fallback)
-- HTTP 5xx: fall back to stale disk data
-
-## Environment Variables
-
-All settings have sensible defaults. Environment variables are optional overrides:
+## Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SWAGGER_MCP_DEFAULT_FORMAT` | `toon` | Default output format (`toon` or `json`) |
-| `SWAGGER_MCP_DEFAULT_LIMIT` | `50` | Default max results for list/search (0 = unlimited) |
-| `SWAGGER_MCP_CACHE_DIR` | `~/.swagger-mcp/cache` | Disk cache directory |
-| `SWAGGER_MCP_DISK_CACHE_TTL` | `24h` | Disk cache TTL (Go duration format) |
-| `SWAGGER_MCP_CONDITIONAL_FETCH` | `true` | Enable HTTP conditional requests |
-| `SWAGGER_MCP_MAX_DISK_ENTRIES` | `50` | Max specs cached on disk |
-| `SWAGGER_MCP_FETCH_TIMEOUT` | `120s` | HTTP fetch timeout (Go duration format, must be > 0) |
-| `SWAGGER_MCP_DEFAULT_URL` | (empty) | Spec URL made active at startup, so tools can omit `url` |
+| `SWA_MCP_DIR` | (empty) | Explicit store directory, overriding walk-up discovery. |
+| `SWAGGER_MCP_DEFAULT_FORMAT` | `toon` | Default output format (`toon` or `json`). |
+| `SWAGGER_MCP_DEFAULT_LIMIT` | `50` | Default `limit` for list/search tools (`0` = unlimited). |
+| `SWAGGER_MCP_FETCH_TIMEOUT` | `120s` | Timeout for a URL read during `swagger-mcp index` (Go duration, must be > 0). |
 
-### Slow specs and MCP client timeouts
+## LLM context guide
 
-Some servers generate the OpenAPI document on every request; a large spec can take
-30-60s before the first byte. The fetch timeout above only governs the MCP server
-side. Your MCP client has its own per-request timeout (60s by default in most
-clients) and will abort first, so raise it for this server too. In Pi:
+Add a snippet like this to `CLAUDE.md`, `.cursorrules`, or your system prompt so
+the model uses the tools efficiently:
 
-```json
-"swagger-mcp": {
-  "command": "swagger-mcp",
-  "timeout": 180
-}
+```markdown
+## API exploration (swagger-mcp)
+
+Answers come from a local index. If a call reports no store or several specs,
+ask the human to run `swagger-mcp index` instead of guessing.
+
+### Workflow
+1. `list_specs` — what is indexed, its source and how old it is
+2. `analyze_tags` — map the API before listing anything
+3. `list_endpoints` with tag/method/path filters
+4. `get_endpoint` for the one endpoint you need in full
+5. `generate_types` to emit TypeScript or Go instead of translating schemas
+6. `get_schema` only to expand a `$ref(Name)` whose fields you actually need
+
+### Rules
+- Omit `spec` when the project indexes one spec; pass `spec=<name>` only when several are indexed
+- Filter before listing: `analyze_tags` → filtered `list_endpoints` beats an unfiltered dump
+- Page with `limit`/`offset` instead of raising the limit
+- Default output is TOON; use `format=json` only when you need structured JSON
+- Schemas resolve 3 levels deep by default; lower `resolve_depth` (or 0) to save tokens
+- Refreshing is explicit: `spec_status` shows age and a `stale` verdict, and its
+  `refresh` field holds the command a human must run — never assume it happened
+
+### Anti-patterns
+- Don't call `list_endpoints` unfiltered on a large API
+- Don't call `get_endpoint` for every endpoint — narrow down first
+- Don't call `all_specs=true` unless you really need the whole store
+- Don't expand every `$ref(Name)` — only the ones whose fields you need
 ```
 
-Because specs are cached on disk (24h by default), only the first fetch of a spec
-is slow.
-
-### Progress notifications
-
-While a fetch is in flight the server emits MCP `notifications/progress` every
-5s, but only when the request carries a progress token. Clients that reset their
-per-request timeout on progress notifications — Pi does — can keep a modest
-timeout and still survive a fetch that takes minutes. Clients that do not ask for
-progress see no change. This cannot be observed with a plain shell test; use an
-MCP client that sends `_meta.progressToken`.
-
-## Defaults
-
-| Setting | Value |
-|---------|-------|
-| Default format | TOON |
-| Default limit | 50 results |
-| Cache TTL (memory) | 5 minutes |
-| Cache TTL (disk) | 24 hours |
-| Max cached specs (memory) | 20 |
-| Max cached specs (disk) | 50 |
-| Max spec size | 20 MB |
-| Fetch timeout | 120 seconds |
-| Conditional fetch | Enabled |
+For Cursor, put the same content in `.cursorrules`. The `usage_guide` tool returns
+this guidance on demand, so a model with no setup context can self-orient.
 
 ## Architecture
 
 ```
-cmd/swagger-mcp/main.go          Entry point — config, MCP server, stdio
+cmd/swagger-mcp/main.go      Entry point — `index` subcommand, else MCP over stdio
+cmd/swagger-mcp/index.go     The indexer: read, validate, write the store
 internal/
-├── config/config.go              Configuration with env var overrides
-├── loader/
-│   ├── loader.go                 L1→L2→HTTP fetch flow, kin-openapi parsing
-│   ├── cache.go                  L1 in-memory LRU cache (mutex-protected)
-│   └── diskcache.go              L2 disk cache (SHA-256 keys, atomic writes)
-├── analyzer/analyzer.go          List, search, tag analysis, spec diffing
-├── extractor/extractor.go        Endpoint detail, schema extraction, $ref resolution
-├── generator/
-│   ├── generator.go              Schema collection, $ref walking, transitive deps
-│   ├── typescript.go             TypeScript interface/type emitter
-│   └── golang.go                 Go struct/const emitter
-├── formatter/
-│   ├── json.go                   JSON output (with ListResult wrapper)
-│   └── toon.go                   TOON output (headers, strip descriptions)
-├── tools/tools.go                MCP tool definitions, handlers, format/limit logic
-└── types/types.go                Shared types, error codes, ListResult
+├── config/config.go         Defaults and env overrides
+├── store/                   SQLite index: layout/discovery, schema, records
+├── tools/                   MCP tool definitions, handlers, spec addressing
+├── loader/                  kin-openapi parsing, normalization, validation
+├── analyzer/                List, search, tag analysis, spec diffing
+├── extractor/               Endpoint detail, schema extraction, $ref resolution
+├── generator/               TypeScript and Go type emitters
+├── formatter/               TOON and JSON output
+└── types/types.go           Shared types and error codes
 ```
 
-### Key Design Decisions
+### Design decisions
 
-- **Token-first defaults** — TOON format + auto-limits minimize LLM token consumption
-- **Per-endpoint `$ref` dedup** — a schema reused across responses (e.g. a shared error envelope) is expanded once, then referenced as `$ref(Name)`; cuts ~60% of tokens on real-world specs without losing meaning
-- **Description-forward schemas** — field descriptions are surfaced inline (`field*: type — description`) while noisy `example`/`default` payloads are dropped, so the model gets signal, not bulk
-- **Guided tool descriptions** — tool descriptions steer LLMs toward efficient filter-first workflows
-- **Two-level cache** — memory + disk with HTTP conditional requests for instant cross-session access
-- **kin-openapi** for parsing — handles OpenAPI 2.0/3.x with automatic `$ref` resolution
-- **Recursive `$ref` resolution** with a low default depth (3, override up to 10) and circular reference protection
-- **stdio transport** — universal compatibility with MCP clients
-- **Zero configuration** — sensible defaults, env vars for optional tuning
+- **The store is the product's data model.** One SQLite file per project holds the
+  raw documents plus a normalized catalog (specs, endpoints, schemas, tags) for
+  discovery. Detail queries load that one stored document and reuse the existing
+  extractor instead of reimplementing `$ref` resolution in SQL.
+- **Writes are explicit, reads never touch the network.** Only
+  `swagger-mcp index` writes and only it may read a URL. Dropping URL addressing
+  from the query path removes the whole class of query-time fetch problems.
+- **Token-first defaults.** TOON, auto-limits and per-endpoint `$ref` dedup keep
+  real-world explorations small.
+- **Description-forward schemas.** Field descriptions are inlined while noisy
+  `example`/`default` payloads are dropped: signal, not bulk.
+- **Guided tool descriptions.** Descriptions steer a model toward
+  filter-first workflows instead of full dumps.
+- **stdio transport.** Universal client compatibility; the same binary is also the
+  indexer.
 
 ## Development
 
 ```bash
-# Run locally
-go run ./cmd/swagger-mcp/
-
-# Build
-go build -o swagger-mcp ./cmd/swagger-mcp/
-
-# Run tests
-go test ./...
-
-# Run tests with verbose output
-go test -v ./...
-
-# Run only unit tests (skip integration)
-go test -short ./...
-
-# Run tests with coverage
-go test -cover ./...
+go run ./cmd/swagger-mcp/                    # serve MCP over stdio
+go run ./cmd/swagger-mcp/ index ./testdata/petstore.json   # writes ./swa-mcp/swa-mcp.db
+go build -o swagger-mcp ./cmd/swagger-mcp/   # build
+go test ./...                                # tests
+go test -short ./...                         # unit tests only
+go test -cover ./...                         # with coverage
 ```
 
-## Tech Stack
+## Tech stack
 
 - [Go](https://go.dev) 1.25+
 - [mcp-go](https://github.com/mark3labs/mcp-go) — MCP server SDK
-- [kin-openapi](https://github.com/getkin/kin-openapi) — OpenAPI spec parsing and validation
+- [kin-openapi](https://github.com/getkin/kin-openapi) — OpenAPI parsing and validation
+- [modernc.org/sqlite](https://modernc.org/sqlite) — pure-Go SQLite (builds with `CGO_ENABLED=0`)
 
 ## License
 
