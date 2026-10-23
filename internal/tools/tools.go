@@ -78,6 +78,7 @@ func (r *Registry) Register(s *server.MCPServer) {
 	s.AddTool(getSchemaTool(), r.handleGetSchema)
 	s.AddTool(searchSpecTool(), r.handleSearchSpec)
 	s.AddTool(listSchemasTool(), r.handleListSchemas)
+	s.AddTool(securitySchemesTool(), r.handleListSecuritySchemes)
 	s.AddTool(analyzeTagsTool(), r.handleAnalyzeTags)
 	s.AddTool(diffEndpointsTool(), r.handleDiffEndpoints)
 	s.AddTool(specStatusTool(), r.handleSpecStatus)
@@ -149,6 +150,14 @@ func listSchemasTool() mcp.Tool {
 		mcp.WithString("filter", mcp.Description("Filter by schema name substring (case-insensitive)")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
 		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
+	)
+}
+
+func securitySchemesTool() mcp.Tool {
+	return mcp.NewTool("security_schemes",
+		mcp.WithDescription("Security scheme definitions (type, scheme, bearer format, apiKey location, OAuth flow URLs/scopes) with how many endpoints use each. Use after get_endpoint shows a security requirement."),
+		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -606,6 +615,29 @@ func (r *Registry) handleListSchemas(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultText(formatter.FormatSchemaListTOON(result)), nil
 	}
 	output, fmtErr := formatter.FormatJSON(result)
+	if fmtErr != nil {
+		return toolError(types.ErrInternalError, fmtErr.Error()), nil
+	}
+	return mcp.NewToolResultText(output), nil
+}
+
+func (r *Registry) handleListSecuritySchemes(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	url := r.resolveURL(req)
+	if url == "" {
+		return toolError(types.ErrInvalidURL, errURLRequired), nil
+	}
+
+	doc, err := r.loadSpec(ctx, url)
+	if err != nil {
+		return toolError(types.ErrFetchFailed, err.Error()), nil
+	}
+
+	overview := analyzer.ListSecuritySchemes(doc)
+
+	if r.getFormat(req) == types.FormatTOON {
+		return mcp.NewToolResultText(formatter.FormatSecurityTOON(overview)), nil
+	}
+	output, fmtErr := formatter.FormatJSON(overview)
 	if fmtErr != nil {
 		return toolError(types.ErrInternalError, fmtErr.Error()), nil
 	}

@@ -825,3 +825,65 @@ func TestFormatListHeaderTOON_OffsetBeyondTotal(t *testing.T) {
 		t.Errorf("header = %q, want an explicit empty page naming the offset and total", header)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// FormatSecurityTOON
+// ---------------------------------------------------------------------------
+
+func TestFormatSecurityTOON(t *testing.T) {
+	out := FormatSecurityTOON(&types.SecurityOverview{
+		Global:                  [][]string{{"bearerAuth"}},
+		UnauthenticatedOverride: 3,
+		Schemes: []types.SecuritySchemeInfo{
+			{Name: "bearerAuth", Type: "http", Scheme: "bearer", BearerFormat: "JWT", Endpoints: 12},
+			{Name: "apiKeyAuth", Type: "apiKey", In: "header", ParamName: "X-API-Key", Endpoints: 2},
+			{Name: "oauth", Type: "oauth2", Endpoints: 1, Scopes: []string{"read", "write"}},
+		},
+	})
+	for _, want := range []string{
+		"bearerAuth", "http", "bearer", "JWT", "12",
+		"apiKeyAuth", "apiKey", "header", "X-API-Key",
+		"oauth2", "read", "write",
+		"global: bearerAuth", "3",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A requirement LIST in OpenAPI is an OR of requirement OBJECTS: reporting the
+// alternatives as a flat comma list reads as "send both", which is wrong.
+func TestFormatSecurityTOON_AlternativesAreOR(t *testing.T) {
+	out := FormatSecurityTOON(&types.SecurityOverview{
+		Global: [][]string{{"Bearer"}, {"ApiKey"}},
+		Schemes: []types.SecuritySchemeInfo{
+			{Name: "Bearer", Type: "http", Scheme: "bearer", BearerFormat: "JWT", Endpoints: 840},
+			{Name: "ApiKey", Type: "apiKey", In: "header", ParamName: "X-Bipbip-Api-Key", Endpoints: 840},
+		},
+	})
+
+	if !strings.Contains(out, "global: Bearer OR ApiKey") {
+		t.Errorf("alternatives must render as OR, got:\n%s", out)
+	}
+	if !strings.Contains(out, "any one is enough") {
+		t.Errorf("output should say one alternative suffices, got:\n%s", out)
+	}
+	if strings.Contains(out, "global: ApiKey, Bearer") || strings.Contains(out, "global: Bearer, ApiKey") {
+		t.Errorf("alternatives must not render as a comma list, got:\n%s", out)
+	}
+}
+
+// Names inside ONE requirement object are required together, so they join with +.
+func TestFormatSecurityTOON_ConjunctionWithinOneRequirement(t *testing.T) {
+	out := FormatSecurityTOON(&types.SecurityOverview{
+		Global: [][]string{{"ApiKey", "Bearer"}},
+	})
+
+	if !strings.Contains(out, "global: ApiKey + Bearer") {
+		t.Errorf("names within one requirement are AND, got:\n%s", out)
+	}
+	if strings.Contains(out, "any one is enough") {
+		t.Errorf("a single alternative is not a choice, got:\n%s", out)
+	}
+}

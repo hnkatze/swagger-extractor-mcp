@@ -205,6 +205,40 @@ func (e *ToolError) Error() string {
 	return e.Code + ": " + e.Message
 }
 
+// SecuritySchemeInfo describes a security scheme definition and its usage.
+type SecuritySchemeInfo struct {
+	Name             string          `json:"name"`
+	Type             string          `json:"type"`
+	Scheme           string          `json:"scheme,omitempty"`
+	BearerFormat     string          `json:"bearer_format,omitempty"`
+	In               string          `json:"in,omitempty"`
+	ParamName        string          `json:"param_name,omitempty"`
+	OpenIDConnectURL string          `json:"openid_connect_url,omitempty"`
+	Description      string          `json:"description,omitempty"`
+	Endpoints        int             `json:"endpoints"`
+	Scopes           []string        `json:"scopes,omitempty"`
+	Flows            []OAuthFlowInfo `json:"flows,omitempty"`
+}
+
+// OAuthFlowInfo holds the URLs of one OAuth2 flow.
+type OAuthFlowInfo struct {
+	Type             string `json:"type"`
+	AuthorizationURL string `json:"authorization_url,omitempty"`
+	TokenURL         string `json:"token_url,omitempty"`
+	RefreshURL       string `json:"refresh_url,omitempty"`
+}
+
+// SecurityOverview lists the security schemes of a spec.
+// Global holds the document-level requirement as alternatives: each outer entry
+// is one way to authenticate and every name inside it is required together. In
+// OpenAPI a requirement LIST is an OR of requirement OBJECTS, so
+// [{Bearer: []}, {ApiKey: []}] means "Bearer OR ApiKey", not "both".
+type SecurityOverview struct {
+	Global                  [][]string           `json:"global,omitempty"`
+	Schemes                 []SecuritySchemeInfo `json:"schemes"`
+	UnauthenticatedOverride int                  `json:"unauthenticated_override"`
+}
+
 // Error codes
 const (
 	ErrInvalidURL          = "INVALID_URL"

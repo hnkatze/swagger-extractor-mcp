@@ -589,3 +589,113 @@ func collectSchemaRefs(ref *openapi3.SchemaRef, out map[string]bool, visited map
 		collectSchemaRefs(schema.AdditionalProperties.Schema, out, visited)
 	}
 }
+
+// ListSecuritySchemes returns the security scheme definitions of the spec with
+// the number of operations requiring each. Operations without their own
+// security fall back to the document-level requirement; an explicit empty
+// requirement opts out and counts toward UnauthenticatedOverride.
+func ListSecuritySchemes(doc *openapi3.T) *types.SecurityOverview {
+	out := &types.SecurityOverview{Schemes: []types.SecuritySchemeInfo{}}
+	if doc == nil {
+		return out
+	}
+
+	for _, req := range doc.Security {
+		names := make([]string, 0, len(req))
+		for name := range req {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		out.Global = append(out.Global, names)
+	}
+
+	usage := make(map[string]int)
+	if doc.Paths != nil {
+		for _, item := range doc.Paths.Map() {
+			if item == nil {
+				continue
+			}
+			forEachOperation("", item, func(_, _ string, op *openapi3.Operation) {
+				effective := doc.Security
+				if op.Security != nil {
+					effective = *op.Security
+				}
+				used := make(map[string]bool)
+				for _, req := range effective {
+					for name := range req {
+						used[name] = true
+					}
+				}
+				if len(used) == 0 {
+					if op.Security != nil {
+						out.UnauthenticatedOverride++
+					}
+					return
+				}
+				for name := range used {
+					usage[name]++
+				}
+			})
+		}
+	}
+
+	if doc.Components != nil {
+		for name, ref := range doc.Components.SecuritySchemes {
+			if ref == nil || ref.Value == nil {
+				continue
+			}
+			out.Schemes = append(out.Schemes, buildSecuritySchemeInfo(name, ref.Value, usage[name]))
+		}
+	}
+
+	sort.Slice(out.Schemes, func(i, j int) bool {
+		if out.Schemes[i].Endpoints != out.Schemes[j].Endpoints {
+			return out.Schemes[i].Endpoints > out.Schemes[j].Endpoints
+		}
+		return out.Schemes[i].Name < out.Schemes[j].Name
+	})
+	return out
+}
+
+func buildSecuritySchemeInfo(name string, s *openapi3.SecurityScheme, endpoints int) types.SecuritySchemeInfo {
+	info := types.SecuritySchemeInfo{
+		Name:             name,
+		Type:             s.Type,
+		Scheme:           s.Scheme,
+		BearerFormat:     s.BearerFormat,
+		In:               s.In,
+		ParamName:        s.Name,
+		OpenIDConnectURL: s.OpenIdConnectUrl,
+		Description:      s.Description,
+		Endpoints:        endpoints,
+	}
+	if s.Flows == nil {
+		return info
+	}
+
+	scopeSet := make(map[string]bool)
+	add := func(kind string, flow *openapi3.OAuthFlow) {
+		if flow == nil {
+			return
+		}
+		info.Flows = append(info.Flows, types.OAuthFlowInfo{
+			Type:             kind,
+			AuthorizationURL: flow.AuthorizationURL,
+			TokenURL:         flow.TokenURL,
+			RefreshURL:       flow.RefreshURL,
+		})
+		for scope := range flow.Scopes {
+			scopeSet[scope] = true
+		}
+	}
+	add("implicit", s.Flows.Implicit)
+	add("password", s.Flows.Password)
+	add("clientCredentials", s.Flows.ClientCredentials)
+	add("authorizationCode", s.Flows.AuthorizationCode)
+
+	for scope := range scopeSet {
+		info.Scopes = append(info.Scopes, scope)
+	}
+	sort.Strings(info.Scopes)
+	return info
+}

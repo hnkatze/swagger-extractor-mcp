@@ -517,3 +517,14 @@ func TestActiveURL_ConcurrentAccess(t *testing.T) {
 		t.Errorf("resolveURL = %q after concurrent writes", got)
 	}
 }
+
+func TestSecuritySchemesTool_HasParams(t *testing.T) {
+	tool := securitySchemesTool()
+	assertToolHasParam(t, tool, "url")
+	assertToolHasParam(t, tool, "format")
+	for _, req := range tool.InputSchema.Required {
+		if req == "url" {
+			t.Error("security_schemes must not require url")
+		}
+	}
+}

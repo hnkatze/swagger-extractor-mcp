@@ -697,3 +697,144 @@ func TestListSchemas_NilDoc(t *testing.T) {
 		t.Errorf("expected nil for nil doc, got %+v", got)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ListSecuritySchemes
+// ---------------------------------------------------------------------------
+
+func securityTestDoc(t *testing.T) *openapi3.T {
+	t.Helper()
+	const spec = `{
+  "openapi": "3.0.3",
+  "info": {"title": "t", "version": "1"},
+  "security": [{"bearerAuth": []}],
+  "paths": {
+    "/a": {"get": {"responses": {"200": {"description": "ok"}}}},
+    "/b": {"get": {"responses": {"200": {"description": "ok"}}}},
+    "/c": {"get": {"security": [{"apiKeyAuth": []}], "responses": {"200": {"description": "ok"}}}},
+    "/d": {"get": {"security": [], "responses": {"200": {"description": "ok"}}}},
+    "/e": {"get": {"security": [{"oauth": ["write", "read"]}], "responses": {"200": {"description": "ok"}}}},
+    "/f": {"get": {"security": [{"oauth": ["read"]}, {"apiKeyAuth": []}], "responses": {"200": {"description": "ok"}}}}
+  },
+  "components": {"securitySchemes": {
+    "bearerAuth": {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
+    "apiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key", "description": "key"},
+    "oauth": {"type": "oauth2", "flows": {
+      "authorizationCode": {"authorizationUrl": "https://a/auth", "tokenUrl": "https://a/token", "scopes": {"read": "r", "write": "w"}},
+      "clientCredentials": {"tokenUrl": "https://a/token", "scopes": {"read": "r", "admin": "a"}}
+    }},
+    "unused": {"type": "openIdConnect", "openIdConnectUrl": "https://a/.well-known/openid-configuration"}
+  }}
+}`
+	doc, err := openapi3.NewLoader().LoadFromData([]byte(spec))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return doc
+}
+
+func TestListSecuritySchemes_DefinitionsAndCounts(t *testing.T) {
+	got := ListSecuritySchemes(securityTestDoc(t))
+
+	if len(got.Global) != 1 || len(got.Global[0]) != 1 || got.Global[0][0] != "bearerAuth" {
+		t.Errorf("Global = %v, want [[bearerAuth]]", got.Global)
+	}
+	if got.UnauthenticatedOverride != 1 {
+		t.Errorf("UnauthenticatedOverride = %d, want 1", got.UnauthenticatedOverride)
+	}
+
+	// bearerAuth: /a,/b via global fallback = 2. apiKeyAuth: /c,/f = 2. oauth: /e,/f = 2. unused = 0.
+	byName := map[string]int{}
+	for _, s := range got.Schemes {
+		byName[s.Name] = s.Endpoints
+	}
+	want := map[string]int{"bearerAuth": 2, "apiKeyAuth": 2, "oauth": 2, "unused": 0}
+	for name, n := range want {
+		if byName[name] != n {
+			t.Errorf("%s endpoints = %d, want %d", name, byName[name], n)
+		}
+	}
+
+	for _, s := range got.Schemes {
+		switch s.Name {
+		case "bearerAuth":
+			if s.Type != "http" || s.Scheme != "bearer" || s.BearerFormat != "JWT" {
+				t.Errorf("bearerAuth = %+v", s)
+			}
+		case "apiKeyAuth":
+			if s.Type != "apiKey" || s.In != "header" || s.ParamName != "X-API-Key" || s.Description != "key" {
+				t.Errorf("apiKeyAuth = %+v", s)
+			}
+		case "oauth":
+			wantScopes := []string{"admin", "read", "write"}
+			if len(s.Scopes) != 3 || s.Scopes[0] != wantScopes[0] || s.Scopes[1] != wantScopes[1] || s.Scopes[2] != wantScopes[2] {
+				t.Errorf("oauth scopes = %v, want %v", s.Scopes, wantScopes)
+			}
+		case "unused":
+			if s.OpenIDConnectURL != "https://a/.well-known/openid-configuration" {
+				t.Errorf("unused OIDC URL = %q", s.OpenIDConnectURL)
+			}
+		}
+	}
+}
+
+func TestListSecuritySchemes_DeterministicOrder(t *testing.T) {
+	doc := securityTestDoc(t)
+	want := []string{"apiKeyAuth", "bearerAuth", "oauth", "unused"} // 2,2,2 by name asc, then 0
+	for i := 0; i < 20; i++ {
+		got := ListSecuritySchemes(doc)
+		for j, s := range got.Schemes {
+			if s.Name != want[j] {
+				t.Fatalf("run %d: order[%d] = %s, want %s", i, j, s.Name, want[j])
+			}
+		}
+	}
+}
+
+func TestListSecuritySchemes_EmptyRequirementMapOptsOut(t *testing.T) {
+	doc := securityTestDoc(t)
+	doc.Paths.Find("/a").Get.Security = &openapi3.SecurityRequirements{openapi3.SecurityRequirement{}}
+	got := ListSecuritySchemes(doc)
+	if got.UnauthenticatedOverride != 2 {
+		t.Errorf("UnauthenticatedOverride = %d, want 2", got.UnauthenticatedOverride)
+	}
+	for _, s := range got.Schemes {
+		if s.Name == "bearerAuth" && s.Endpoints != 1 {
+			t.Errorf("bearerAuth endpoints = %d, want 1", s.Endpoints)
+		}
+	}
+}
+
+func TestListSecuritySchemes_NilSafe(t *testing.T) {
+	if got := ListSecuritySchemes(nil); got == nil || len(got.Schemes) != 0 {
+		t.Errorf("nil doc = %+v", got)
+	}
+	if got := ListSecuritySchemes(&openapi3.T{}); got == nil || len(got.Schemes) != 0 {
+		t.Errorf("empty doc = %+v", got)
+	}
+}
+
+// The doc-level security LIST is an OR of requirement objects; each object keeps
+// its own group so a reader can tell "either of these" from "both of these".
+func TestListSecuritySchemes_KeepsAlternativeGroups(t *testing.T) {
+	doc := &openapi3.T{
+		OpenAPI: "3.0.0",
+		Paths:   &openapi3.Paths{},
+		Security: openapi3.SecurityRequirements{
+			openapi3.SecurityRequirement{"Bearer": []string{}},
+			openapi3.SecurityRequirement{"ApiKey": []string{}},
+		},
+	}
+
+	got := ListSecuritySchemes(doc)
+
+	if len(got.Global) != 2 {
+		t.Fatalf("Global = %v, want 2 alternative groups", got.Global)
+	}
+	if len(got.Global[0]) != 1 || got.Global[0][0] != "Bearer" {
+		t.Errorf("Global[0] = %v, want [Bearer]", got.Global[0])
+	}
+	if len(got.Global[1]) != 1 || got.Global[1][0] != "ApiKey" {
+		t.Errorf("Global[1] = %v, want [ApiKey]", got.Global[1])
+	}
+}

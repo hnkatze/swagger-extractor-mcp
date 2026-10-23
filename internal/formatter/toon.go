@@ -926,3 +926,70 @@ func hasKey(m map[string]interface{}, key string) bool {
 	_, ok := m[key]
 	return ok
 }
+
+// FormatSecurityTOON formats security scheme definitions, one line per scheme,
+// with the credential detail a caller needs to build the request.
+func FormatSecurityTOON(o *types.SecurityOverview) string {
+	var b strings.Builder
+
+	if len(o.Global) > 0 {
+		alts := make([]string, 0, len(o.Global))
+		for _, req := range o.Global {
+			alts = append(alts, strings.Join(req, " + "))
+		}
+		line := "global: " + strings.Join(alts, " OR ")
+		if len(alts) > 1 {
+			line += " (any one is enough)"
+		}
+		b.WriteString(line + "\n")
+	} else {
+		b.WriteString("global: none\n")
+	}
+	if o.UnauthenticatedOverride > 0 {
+		b.WriteString(fmt.Sprintf("no auth (security: []): %d endpoints\n", o.UnauthenticatedOverride))
+	}
+
+	for _, s := range o.Schemes {
+		b.WriteString(fmt.Sprintf("%s: %s", s.Name, s.Type))
+		if s.Scheme != "" {
+			b.WriteString(" " + s.Scheme)
+		}
+		b.WriteString(fmt.Sprintf(" (in auth of %d)", s.Endpoints))
+
+		switch s.Type {
+		case "http":
+			if s.BearerFormat != "" {
+				b.WriteString(" format=" + s.BearerFormat)
+			}
+			if s.Scheme != "" {
+				b.WriteString(" — Authorization: " + strings.ToUpper(s.Scheme[:1]) + s.Scheme[1:] + " <credentials>")
+			}
+		case "apiKey":
+			b.WriteString(fmt.Sprintf(" — %s %s", s.In, s.ParamName))
+		case "openIdConnect":
+			b.WriteString(" — discovery " + s.OpenIDConnectURL)
+		case "oauth2":
+			for _, f := range s.Flows {
+				b.WriteString(" — " + f.Type)
+				if f.AuthorizationURL != "" {
+					b.WriteString(" auth=" + f.AuthorizationURL)
+				}
+				if f.TokenURL != "" {
+					b.WriteString(" token=" + f.TokenURL)
+				}
+				if f.RefreshURL != "" {
+					b.WriteString(" refresh=" + f.RefreshURL)
+				}
+			}
+			if len(s.Scopes) > 0 {
+				b.WriteString(" scopes=" + strings.Join(s.Scopes, ","))
+			}
+		}
+		if s.Description != "" {
+			b.WriteString(" — " + s.Description)
+		}
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
