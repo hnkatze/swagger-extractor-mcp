@@ -16,7 +16,9 @@ const serverName = "swagger-mcp"
 // serverVersion is the version reported in the MCP handshake. It is a var so a
 // release build can override it with -X main.serverVersion=<tag>: as a const it
 // drifted silently (releases shipped v0.6.0 while every client saw 0.4.0).
-var serverVersion = "0.7.0"
+// Uninjected builds report "dev" rather than a number that is wrong the moment it
+// is written; goreleaser injects the real tag on release.
+var serverVersion = "dev"
 
 func main() {
 	// `swagger-mcp index ...` is the explicit write path into the local store
