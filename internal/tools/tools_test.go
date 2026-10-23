@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -526,5 +528,109 @@ func TestSecuritySchemesTool_HasParams(t *testing.T) {
 		if req == "url" {
 			t.Error("security_schemes must not require url")
 		}
+	}
+}
+
+// tagSpecServer serves a tiny spec: tag "pets" uses Pet, "other" uses Thing,
+// and "bare" has an endpoint with no component refs.
+func tagSpecServer(t *testing.T) string {
+	t.Helper()
+	const spec = `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{
+"/pets":{"get":{"tags":["pets"],"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Pet"}}}}}}},
+"/things":{"get":{"tags":["other"],"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Thing"}}}}}}},
+"/bare":{"get":{"tags":["bare"],"responses":{"204":{"description":"none"}}}}},
+"components":{"schemas":{"Pet":{"type":"object","properties":{"name":{"type":"string"}}},"Thing":{"type":"object","properties":{"id":{"type":"string"}}}}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(spec))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func TestGenerateTypesTool_HasTagParamAndPrecedence(t *testing.T) {
+	tool := generateTypesTool()
+	if _, ok := tool.InputSchema.Properties["tag"]; !ok {
+		t.Fatal("generate_types should expose a tag param")
+	}
+	desc := strings.ToLower(tool.Description)
+	for _, want := range []string{"every schema a tag uses", "deduplicated", "tag wins over schema"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("description should mention %q: %s", want, tool.Description)
+		}
+	}
+}
+
+func TestHandleGenerateTypes_TagMode(t *testing.T) {
+	r := New(config.Default())
+	url := tagSpecServer(t)
+	for _, lang := range []string{"typescript", "go"} {
+		res, err := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
+			"url": url, "tag": "pets", "language": lang,
+		}))
+		if err != nil || res.IsError {
+			t.Fatalf("%s: unexpected failure: %v %v", lang, err, res)
+		}
+		text := extractText(res)
+		if !strings.Contains(text, "Pet") || strings.Contains(text, "Thing") {
+			t.Errorf("%s: tag mode should emit Pet only:\n%s", lang, text)
+		}
+	}
+}
+
+func TestHandleGenerateTypes_TagWinsOverSchema(t *testing.T) {
+	r := New(config.Default())
+	url := tagSpecServer(t)
+	// schema is valid but the tag matches nothing: the tag path must run and fail.
+	res, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
+		"url": url, "tag": "missing", "schema": "Pet",
+	}))
+	if !res.IsError || !strings.Contains(extractText(res), "missing") {
+		t.Fatalf("expected tag-mode error naming the tag, got %q", extractText(res))
+	}
+	// tag is valid and schema names a different schema: tag output wins.
+	res, _ = r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
+		"url": url, "tag": "pets", "schema": "Thing",
+	}))
+	text := extractText(res)
+	if res.IsError || !strings.Contains(text, "Pet") || strings.Contains(text, "Thing") {
+		t.Fatalf("tag should win over schema, got %q", text)
+	}
+}
+
+func TestHandleGenerateTypes_TagErrorsAreDistinct(t *testing.T) {
+	r := New(config.Default())
+	url := tagSpecServer(t)
+	unknown, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{"url": url, "tag": "zzz"}))
+	bare, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{"url": url, "tag": "bare"}))
+	if !unknown.IsError || !bare.IsError {
+		t.Fatal("both cases must be tool errors, not empty output")
+	}
+	if !strings.Contains(extractText(unknown), "no endpoint") {
+		t.Errorf("unknown tag message: %q", extractText(unknown))
+	}
+	if !strings.Contains(extractText(bare), "no named schemas") {
+		t.Errorf("bare tag message: %q", extractText(bare))
+	}
+}
+
+func TestHandleGenerateTypes_TagModeJSONReportsCount(t *testing.T) {
+	r := New(config.Default())
+	res, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
+		"url": tagSpecServer(t), "tag": "pets", "format": "json",
+	}))
+	text := extractText(res)
+	if res.IsError || !strings.Contains(text, `"schema_count"`) || !strings.Contains(text, `"Pet"`) {
+		t.Fatalf("expected schema_count and names, got %q", text)
+	}
+}
+
+func TestHandleGenerateTypes_SchemaModeStillWorks(t *testing.T) {
+	r := New(config.Default())
+	res, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
+		"url": tagSpecServer(t), "schema": "Thing",
+	}))
+	if res.IsError || !strings.Contains(extractText(res), "Thing") {
+		t.Fatalf("schema mode regressed: %q", extractText(res))
 	}
 }

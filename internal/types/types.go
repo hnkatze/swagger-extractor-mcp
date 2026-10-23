@@ -185,9 +185,10 @@ type SpecStatus struct {
 
 // GenerateTypesResult is returned by generate_types with the generated code.
 type GenerateTypesResult struct {
-	Language string   `json:"language"`
-	Types    string   `json:"types"`
-	Names    []string `json:"names"`
+	Language    string   `json:"language"`
+	Types       string   `json:"types"`
+	Names       []string `json:"names"`
+	SchemaCount int      `json:"schema_count"`
 }
 
 // ToolError is a structured error response that implements the error interface.

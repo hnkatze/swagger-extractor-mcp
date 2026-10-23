@@ -2,6 +2,7 @@ package generator
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -212,4 +213,46 @@ func getOperationByMethod(item *openapi3.PathItem, method string) *openapi3.Oper
 	default:
 		return nil
 	}
+}
+
+// GenerateForSchemas emits one combined definition set for the given root
+// schema names plus every named schema they reference. Output is sorted by
+// schema name and each schema appears once, so repeated calls on the same spec
+// produce identical text no matter how many roots share a dependency.
+func GenerateForSchemas(doc *openapi3.T, roots []string, language string) (string, []string, error) {
+	if len(roots) == 0 {
+		return "", nil, fmt.Errorf("no schema names given")
+	}
+
+	visited := make(map[string]bool)
+	var collected []*NamedSchema
+	for _, name := range roots {
+		if doc == nil || doc.Components == nil || doc.Components.Schemas[name] == nil {
+			return "", nil, fmt.Errorf("schema %q not found", name)
+		}
+		collectRefs(doc, name, doc.Components.Schemas[name], visited, &collected)
+	}
+
+	// collectRefs keys on the $ref, and a root taken from components has none,
+	// so a schema reached both as a root and as a dependency would repeat.
+	seen := make(map[string]bool, len(collected))
+	schemas := make([]*NamedSchema, 0, len(collected))
+	for _, ns := range collected {
+		if seen[ns.Name] {
+			continue
+		}
+		seen[ns.Name] = true
+		schemas = append(schemas, ns)
+	}
+	sort.Slice(schemas, func(i, j int) bool { return schemas[i].Name < schemas[j].Name })
+
+	names := make([]string, len(schemas))
+	for i, ns := range schemas {
+		names[i] = ns.Name
+	}
+
+	if language == "go" {
+		return GenerateGo(schemas), names, nil
+	}
+	return GenerateTypeScript(schemas), names, nil
 }

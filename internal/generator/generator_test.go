@@ -266,3 +266,106 @@ func buildTestDoc() *openapi3.T {
 		},
 	}
 }
+
+// buildTagTestDoc has two "pets" endpoints that share Pet (which references
+// Owner) plus a distinct Zebra, and an "other" endpoint using Unrelated.
+func buildTagTestDoc() *openapi3.T {
+	obj := func(props openapi3.Schemas) *openapi3.Schema {
+		return &openapi3.Schema{Type: &openapi3.Types{"object"}, Properties: props}
+	}
+	str := &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}}
+
+	owner := &openapi3.SchemaRef{Value: obj(openapi3.Schemas{"id": str})}
+	pet := &openapi3.SchemaRef{Value: obj(openapi3.Schemas{
+		"name":  str,
+		"owner": &openapi3.SchemaRef{Ref: "#/components/schemas/Owner", Value: owner.Value},
+	})}
+	zebra := &openapi3.SchemaRef{Value: obj(openapi3.Schemas{"stripes": str})}
+	unrelated := &openapi3.SchemaRef{Value: obj(openapi3.Schemas{"x": str})}
+
+	op := func(tag, name string, v *openapi3.SchemaRef) *openapi3.Operation {
+		desc := "ok"
+		return &openapi3.Operation{
+			OperationID: name,
+			Tags:        []string{tag},
+			Responses: openapi3.NewResponses(openapi3.WithStatus(200, &openapi3.ResponseRef{
+				Value: &openapi3.Response{Description: &desc, Content: openapi3.Content{
+					"application/json": &openapi3.MediaType{Schema: v},
+				}},
+			})),
+		}
+	}
+
+	paths := openapi3.NewPaths()
+	paths.Set("/pets", &openapi3.PathItem{
+		Get:  op("pets", "listPets", &openapi3.SchemaRef{Ref: "#/components/schemas/Zebra", Value: zebra.Value}),
+		Post: op("pets", "addPet", &openapi3.SchemaRef{Ref: "#/components/schemas/Pet", Value: pet.Value}),
+	})
+	paths.Set("/pets/{id}", &openapi3.PathItem{
+		Get: op("pets", "getPet", &openapi3.SchemaRef{Ref: "#/components/schemas/Pet", Value: pet.Value}),
+	})
+	paths.Set("/other", &openapi3.PathItem{
+		Get: op("other", "getOther", &openapi3.SchemaRef{Ref: "#/components/schemas/Unrelated", Value: unrelated.Value}),
+	})
+
+	return &openapi3.T{
+		Paths: paths,
+		Components: &openapi3.Components{Schemas: openapi3.Schemas{
+			"Owner": owner, "Pet": pet, "Zebra": zebra, "Unrelated": unrelated,
+		}},
+	}
+}
+
+func TestGenerateForSchemas_ExactlyOnceSorted(t *testing.T) {
+	doc := buildTagTestDoc()
+	// Roots are unsorted with a duplicate and Owner is only reachable through Pet:
+	// output must expand nested schemas, then be sorted and emit each once.
+	input := []string{"Zebra", "Pet", "Pet"}
+	cases := []struct {
+		language string
+		marker   func(name string) string
+	}{
+		{"typescript", func(n string) string { return "interface " + n + " " }},
+		{"go", func(n string) string { return "type " + n + " struct" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.language, func(t *testing.T) {
+			code, emitted, err := GenerateForSchemas(doc, input, tc.language)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.Join(emitted, ",") != "Owner,Pet,Zebra" {
+				t.Errorf("emitted = %v", emitted)
+			}
+			last := -1
+			for _, n := range []string{"Owner", "Pet", "Zebra"} {
+				m := tc.marker(n)
+				if c := strings.Count(code, m); c != 1 {
+					t.Errorf("%q appears %d times, want 1\n%s", m, c, code)
+				}
+				idx := strings.Index(code, m)
+				if idx <= last {
+					t.Errorf("%s out of order\n%s", n, code)
+				}
+				last = idx
+			}
+			if strings.Contains(code, "Unrelated") {
+				t.Errorf("unrequested schema emitted\n%s", code)
+			}
+		})
+	}
+}
+
+func TestGenerateForSchemas_MissingSchema(t *testing.T) {
+	_, _, err := GenerateForSchemas(buildTagTestDoc(), []string{"Pet", "Ghost"}, "go")
+	if err == nil || !strings.Contains(err.Error(), "Ghost") {
+		t.Fatalf("expected error naming Ghost, got %v", err)
+	}
+}
+
+func TestGenerateForSchemas_NoRoots(t *testing.T) {
+	_, _, err := GenerateForSchemas(buildTagTestDoc(), nil, "go")
+	if err == nil {
+		t.Fatal("expected error for empty root list")
+	}
+}

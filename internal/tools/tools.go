@@ -198,8 +198,9 @@ func refreshSpecTool() mcp.Tool {
 
 func generateTypesTool() mcp.Tool {
 	return mcp.NewTool("generate_types",
-		mcp.WithDescription("Emit copy-paste-ready type definitions (TypeScript interfaces or Go structs) from an endpoint or a named schema."),
+		mcp.WithDescription("Emit copy-paste-ready type definitions (TypeScript interfaces or Go structs) from a tag, a named schema, or an endpoint. Tag mode covers every schema a tag uses, deduplicated and sorted by name. Precedence: tag wins over schema, which wins over method+path."),
 		mcp.WithString("url", mcp.Description("Spec URL (omit to use the session default set by fetch_spec)")),
+		mcp.WithString("tag", mcp.Description("Generate types for every schema reachable from this tag's endpoints")),
 		mcp.WithString("method", mcp.Description("HTTP method (with path = endpoint mode)")),
 		mcp.WithString("path", mcp.Description("Endpoint path (with method = endpoint mode)")),
 		mcp.WithString("schema", mcp.Description("Schema name (alternative to method+path)")),
@@ -764,21 +765,24 @@ func (r *Registry) handleGenerateTypes(ctx context.Context, req mcp.CallToolRequ
 	method := getStringArg(req, "method")
 	path := getStringArg(req, "path")
 	schemaName := getStringArg(req, "schema")
+	tag := getStringArg(req, "tag")
 	language := strings.ToLower(getStringArg(req, "language"))
 	if language == "" {
 		language = "typescript"
 	}
 
-	// Validate: must have either (method+path) or schema, not both, not neither
+	// Precedence: tag wins over schema, which wins over method+path. A tag
+	// request skips the schema/endpoint conflict check entirely.
+	hasTag := tag != ""
 	hasEndpoint := method != "" || path != ""
 	hasSchema := schemaName != ""
-	if hasEndpoint && hasSchema {
+	if !hasTag && hasEndpoint && hasSchema {
 		return toolError(types.ErrInvalidFormat, "provide either method+path or schema, not both"), nil
 	}
-	if !hasEndpoint && !hasSchema {
-		return toolError(types.ErrInvalidFormat, "provide either method+path (endpoint mode) or schema (schema mode)"), nil
+	if !hasTag && !hasEndpoint && !hasSchema {
+		return toolError(types.ErrInvalidFormat, "provide tag (tag mode), schema (schema mode) or method+path (endpoint mode)"), nil
 	}
-	if hasEndpoint && (method == "" || path == "") {
+	if !hasTag && !hasSchema && (method == "" || path == "") {
 		return toolError(types.ErrInvalidFormat, "both method and path are required for endpoint mode"), nil
 	}
 	if language != "typescript" && language != "go" {
@@ -790,34 +794,50 @@ func (r *Registry) handleGenerateTypes(ctx context.Context, req mcp.CallToolRequ
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}
 
-	var schemas []*generator.NamedSchema
-	if hasSchema {
-		schemas, err = generator.CollectSchemaByName(doc, schemaName)
-	} else {
-		schemas, err = generator.CollectEndpointSchemas(doc, method, path)
-	}
-	if err != nil {
-		return toolError(types.ErrSchemaNotFound, err.Error()), nil
-	}
-
 	var code string
-	switch language {
-	case "go":
-		code = generator.GenerateGo(schemas)
-	default:
-		code = generator.GenerateTypeScript(schemas)
+	var names []string
+	if hasTag {
+		if len(analyzer.ListEndpoints(doc, analyzer.ListFilter{Tag: tag})) == 0 {
+			return toolError(types.ErrSchemaNotFound, fmt.Sprintf("no endpoint carries tag %q; discover tags via analyze_tags", tag)), nil
+		}
+		roots := analyzer.CollectTagRefs(doc, tag)
+		if len(roots) == 0 {
+			return toolError(types.ErrSchemaNotFound, fmt.Sprintf("endpoints tagged %q reference no named schemas", tag)), nil
+		}
+		code, names, err = generator.GenerateForSchemas(doc, roots, language)
+		if err != nil {
+			return toolError(types.ErrSchemaNotFound, err.Error()), nil
+		}
+	} else {
+		var schemas []*generator.NamedSchema
+		if hasSchema {
+			schemas, err = generator.CollectSchemaByName(doc, schemaName)
+		} else {
+			schemas, err = generator.CollectEndpointSchemas(doc, method, path)
+		}
+		if err != nil {
+			return toolError(types.ErrSchemaNotFound, err.Error()), nil
+		}
+
+		switch language {
+		case "go":
+			code = generator.GenerateGo(schemas)
+		default:
+			code = generator.GenerateTypeScript(schemas)
+		}
+		names = make([]string, 0, len(schemas))
+		for _, s := range schemas {
+			names = append(names, s.Name)
+		}
 	}
 
 	format := r.getFormat(req)
 	if format == types.FormatJSON {
-		names := make([]string, 0, len(schemas))
-		for _, s := range schemas {
-			names = append(names, s.Name)
-		}
 		result := &types.GenerateTypesResult{
-			Language: language,
-			Types:    code,
-			Names:    names,
+			Language:    language,
+			Types:       code,
+			Names:       names,
+			SchemaCount: len(names),
 		}
 		output, fmtErr := formatter.FormatJSON(result)
 		if fmtErr != nil {

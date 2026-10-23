@@ -699,3 +699,30 @@ func buildSecuritySchemeInfo(name string, s *openapi3.SecurityScheme, endpoints 
 	sort.Strings(info.Scopes)
 	return info
 }
+
+// CollectTagRefs returns the sorted, deduplicated names of the component
+// schemas that the endpoints carrying tag reach directly in their parameters,
+// request bodies and responses. Nested schemas are the caller's job (the
+// generator already expands them via its own collectRefs).
+func CollectTagRefs(doc *openapi3.T, tag string) []string {
+	if doc == nil || doc.Paths == nil {
+		return nil
+	}
+	refs := make(map[string]bool)
+	for path, item := range doc.Paths.Map() {
+		if item == nil {
+			continue
+		}
+		forEachOperation(path, item, func(_, _ string, op *openapi3.Operation) {
+			if hasTag(op, tag) {
+				collectOperationRefs(op, refs)
+			}
+		})
+	}
+	names := make([]string, 0, len(refs))
+	for name := range refs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}

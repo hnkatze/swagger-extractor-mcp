@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -836,5 +837,28 @@ func TestListSecuritySchemes_KeepsAlternativeGroups(t *testing.T) {
 	}
 	if len(got.Global[1]) != 1 || got.Global[1][0] != "ApiKey" {
 		t.Errorf("Global[1] = %v, want [ApiKey]", got.Global[1])
+	}
+}
+
+func TestCollectTagRefs_SortedUniqueAndTagScoped(t *testing.T) {
+	const spec = `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{
+"/a":{"get":{"tags":["Pets"],"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Zebra"}}}}}}},
+"/b":{"post":{"tags":["pets"],"requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Pet"}}}},"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Pet"}}}}}}},
+"/c":{"get":{"tags":["other"],"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Other"}}}}}}}},
+"components":{"schemas":{"Zebra":{"type":"object"},"Pet":{"type":"object"},"Other":{"type":"object"}}}}`
+	doc, err := openapi3.NewLoader().LoadFromData([]byte(spec))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	got := CollectTagRefs(doc, "pets")
+	if strings.Join(got, ",") != "Pet,Zebra" {
+		t.Errorf("CollectTagRefs = %v, want [Pet Zebra]", got)
+	}
+	if got := CollectTagRefs(doc, "nope"); len(got) != 0 {
+		t.Errorf("unknown tag should be empty, got %v", got)
+	}
+	if got := CollectTagRefs(nil, "pets"); len(got) != 0 {
+		t.Errorf("nil doc should be empty, got %v", got)
 	}
 }
