@@ -26,17 +26,23 @@ All output is **token-optimized by default** using TOON format (~40% fewer token
 
 | Tool | Description |
 |------|-------------|
-| `fetch_spec` | Download and cache a spec. Returns title, version, endpoint/tag/schema counts. Supports `refresh=true`. |
+| `fetch_spec` | Download and cache a spec and make it the session default. Returns title, version, endpoint/tag/schema counts. `refresh=true` bypasses the cache. |
 | `analyze_tags` | Tag summary with endpoint counts and method breakdown. **Start here** to understand the API. |
-| `list_endpoints` | List endpoints with filters (tag, method, path pattern). Auto-limited to 50 results. |
+| `list_endpoints` | List endpoints with filters (`tag`, `method`, `path_pattern`, `deprecated`). Page with `limit`/`offset`; the header shows the range and next offset. |
 | `get_endpoint` | Full detail for one endpoint — params, request body, responses, resolved schemas (field descriptions inline; repeats shown as `$ref(Name)`). |
 | `get_schema` | Get a named schema with nested `$ref` resolved. Use to expand a `$ref(Name)` seen in `get_endpoint`. |
-| `search_spec` | Full-text search across paths, summaries, operation IDs, parameters, and body properties. Auto-limited to 50. |
+| `list_schemas` | Component schemas with field count and how many endpoints use each, sorted by usage. This is how you find models without guessing names. |
+| `search_spec` | Full-text search across paths, summaries, operation IDs, parameters, and body properties. Auto-limited to 50, supports `offset`. |
+| `security_schemes` | Auth scheme definitions (http bearer/apiKey/OAuth2/OIDC), their headers or flow URLs, and usage counts. A requirement list is an OR of alternatives, not an AND. |
+| `validate_spec` | Report VALID/INVALID with a deterministic list of violations. For authoring a spec, not consuming one. |
 | `diff_endpoints` | Compare two spec versions. Shows added, removed, and changed endpoints. |
 | `spec_status` | Check cache status (memory/disk), fingerprint, age, ETag. No HTTP requests. |
-| `refresh_spec` | Force-refresh a cached spec. Returns change detection via fingerprint comparison. |
-| `generate_types` | Generate TypeScript interfaces or Go structs from an endpoint or named schema. |
+| `refresh_spec` | Force-refresh a cached spec. Returns change detection via fingerprint comparison. A failed refresh leaves the cached copy intact. |
+| `generate_types` | Generate TypeScript interfaces or Go structs from an endpoint, a named schema, or a whole `tag`. |
 | `usage_guide` | Return this server's workflow, token-saving rules, output notation, and example call sequences. The LLM can call it to self-orient when it lacks setup context. |
+
+`url` is optional on every read tool: `fetch_spec` makes the URL it fetched the
+session default, and `SWAGGER_MCP_DEFAULT_URL` seeds it at startup.
 
 ### Recommended Workflow
 
@@ -311,6 +317,7 @@ All settings have sensible defaults. Environment variables are optional override
 | `SWAGGER_MCP_CONDITIONAL_FETCH` | `true` | Enable HTTP conditional requests |
 | `SWAGGER_MCP_MAX_DISK_ENTRIES` | `50` | Max specs cached on disk |
 | `SWAGGER_MCP_FETCH_TIMEOUT` | `120s` | HTTP fetch timeout (Go duration format, must be > 0) |
+| `SWAGGER_MCP_DEFAULT_URL` | (empty) | Spec URL made active at startup, so tools can omit `url` |
 
 ### Slow specs and MCP client timeouts
 
@@ -328,6 +335,15 @@ clients) and will abort first, so raise it for this server too. In Pi:
 
 Because specs are cached on disk (24h by default), only the first fetch of a spec
 is slow.
+
+### Progress notifications
+
+While a fetch is in flight the server emits MCP `notifications/progress` every
+5s, but only when the request carries a progress token. Clients that reset their
+per-request timeout on progress notifications — Pi does — can keep a modest
+timeout and still survive a fetch that takes minutes. Clients that do not ask for
+progress see no change. This cannot be observed with a plain shell test; use an
+MCP client that sends `_meta.progressToken`.
 
 ## Defaults
 
