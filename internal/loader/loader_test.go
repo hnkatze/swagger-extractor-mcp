@@ -964,3 +964,57 @@ func TestLoadFromURL_ConditionalHeaders_Sent(t *testing.T) {
 		t.Errorf("expected If-Modified-Since header %q, got %q", "Fri, 05 Jan 2024 10:00:00 GMT", capturedLastModified)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ForceLoadFromURL — a failed refresh must not destroy the working cache
+// ---------------------------------------------------------------------------
+
+// refresh_spec exists to recover from a stale spec on a slow server. If the
+// refresh invalidates the cache BEFORE fetching, a refresh that times out leaves
+// the caller with neither the new spec nor the old one, so every later call pays
+// the full slow network cost again.
+func TestForceLoadFromURL_FailedRefreshKeepsCachedSpec(t *testing.T) {
+	var hits atomic.Int32
+	fail := atomic.Bool{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if fail.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(testSpec))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.CacheDir = dir
+	cfg.DiskCacheTTL = time.Hour
+	cfg.FetchTimeout = 5 * time.Second
+	l := New(cfg)
+	ctx := context.Background()
+
+	if _, _, err := l.LoadFromURL(ctx, srv.URL); err != nil {
+		t.Fatalf("initial load: %v", err)
+	}
+
+	// The server now fails; the refresh must fail too.
+	fail.Store(true)
+	if _, _, err := l.ForceLoadFromURL(ctx, srv.URL); err == nil {
+		t.Fatal("expected the refresh to fail on HTTP 500")
+	}
+	// The failed refresh itself costs one request; what matters is what happens after.
+	hitsAfterFailedRefresh := hits.Load()
+
+	// A fresh loader over the same disk cache must still serve the old spec
+	// without touching the network.
+	l2 := New(cfg)
+	if _, _, err := l2.LoadFromURL(ctx, srv.URL); err != nil {
+		t.Fatalf("cached spec was lost after a failed refresh: %v", err)
+	}
+	if got := hits.Load(); got != hitsAfterFailedRefresh {
+		t.Errorf("serving the cached spec after a failed refresh made a network call: hits went %d -> %d", hitsAfterFailedRefresh, got)
+	}
+}

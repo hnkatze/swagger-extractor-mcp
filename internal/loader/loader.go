@@ -396,11 +396,10 @@ func (l *Loader) ForceLoadFromURL(ctx context.Context, rawURL string) (*openapi3
 		}
 	}
 
-	// Invalidate both cache levels
-	l.cache.Delete(normalized)
-	if l.diskCache != nil && l.diskCache.Enabled() {
-		l.diskCache.Delete(normalized)
-	}
+	// Do NOT invalidate the cache levels before fetching. fullFetch overwrites both
+	// on success, and clearing them up front meant a refresh that timed out left the
+	// caller with neither the new spec nor the old one — on a server that takes 60s+
+	// to answer, that turned a transient failure into losing the working data.
 
 	// Full HTTP fetch
 	doc, summary, err := l.fullFetch(ctx, normalized, rawURL)
