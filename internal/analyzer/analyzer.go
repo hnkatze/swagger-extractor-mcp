@@ -27,27 +27,40 @@ func forEachOperation(path string, item *openapi3.PathItem, fn func(method, path
 }
 
 // ListEndpoints returns a filtered list of endpoint summaries from the spec.
-func ListEndpoints(doc *openapi3.T, tag string, method string, pathPattern string) []types.EndpointSummary {
+// ListFilter selects which endpoints a listing returns.
+// Deprecated nil means "both current and deprecated", which is what an
+// unfiltered listing should show.
+type ListFilter struct {
+	Tag         string
+	Method      string
+	PathPattern string
+	Deprecated  *bool
+}
+
+func ListEndpoints(doc *openapi3.T, f ListFilter) []types.EndpointSummary {
 	if doc == nil || doc.Paths == nil {
 		return nil
 	}
 
 	var results []types.EndpointSummary
 
-	methodUpper := strings.ToUpper(method)
+	methodUpper := strings.ToUpper(f.Method)
 
 	for path, item := range doc.Paths.Map() {
 		if item == nil {
 			continue
 		}
-		if pathPattern != "" && !strings.Contains(path, pathPattern) {
+		if f.PathPattern != "" && !strings.Contains(path, f.PathPattern) {
 			continue
 		}
 		forEachOperation(path, item, func(m, p string, op *openapi3.Operation) {
 			if methodUpper != "" && m != methodUpper {
 				return
 			}
-			if tag != "" && !hasTag(op, tag) {
+			if f.Tag != "" && !hasTag(op, f.Tag) {
+				return
+			}
+			if f.Deprecated != nil && op.Deprecated != *f.Deprecated {
 				return
 			}
 			results = append(results, types.EndpointSummary{
@@ -450,4 +463,129 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// ListSchemas
+// ---------------------------------------------------------------------------
+
+const schemaRefPrefix = "#/components/schemas/"
+
+// ListSchemas returns every component schema with its field count and how many
+// endpoints reference it, sorted by usage then name. Without this, a spec's
+// schemas are only discoverable by hitting a $ref inside an endpoint and
+// guessing the name.
+func ListSchemas(doc *openapi3.T, filter string) []types.SchemaInfo {
+	if doc == nil || doc.Components == nil || len(doc.Components.Schemas) == 0 {
+		return nil
+	}
+
+	usage := make(map[string]int)
+	if doc.Paths != nil {
+		for _, item := range doc.Paths.Map() {
+			if item == nil {
+				continue
+			}
+			forEachOperation("", item, func(_, _ string, op *openapi3.Operation) {
+				refs := make(map[string]bool)
+				collectOperationRefs(op, refs)
+				for name := range refs {
+					usage[name]++
+				}
+			})
+		}
+	}
+
+	filterLower := strings.ToLower(filter)
+
+	schemas := make([]types.SchemaInfo, 0, len(doc.Components.Schemas))
+	for name, ref := range doc.Components.Schemas {
+		if filterLower != "" && !strings.Contains(strings.ToLower(name), filterLower) {
+			continue
+		}
+		info := types.SchemaInfo{Name: name, UsedBy: usage[name]}
+		if ref != nil && ref.Value != nil {
+			info.FieldCount = len(ref.Value.Properties)
+			info.Description = ref.Value.Description
+		}
+		schemas = append(schemas, info)
+	}
+
+	// Go map iteration is random: without an explicit order, the same spec
+	// returns rows in a different sequence on every call and offset paging
+	// silently skips or repeats entries.
+	sort.Slice(schemas, func(i, j int) bool {
+		if schemas[i].UsedBy != schemas[j].UsedBy {
+			return schemas[i].UsedBy > schemas[j].UsedBy
+		}
+		return schemas[i].Name < schemas[j].Name
+	})
+
+	return schemas
+}
+
+// collectOperationRefs gathers every component schema name reachable from an
+// operation's parameters, request body and responses.
+func collectOperationRefs(op *openapi3.Operation, out map[string]bool) {
+	if op == nil {
+		return
+	}
+	visited := make(map[*openapi3.Schema]bool)
+	for _, paramRef := range op.Parameters {
+		if paramRef != nil && paramRef.Value != nil {
+			collectSchemaRefs(paramRef.Value.Schema, out, visited)
+		}
+	}
+	if op.RequestBody != nil && op.RequestBody.Value != nil {
+		for _, media := range op.RequestBody.Value.Content {
+			if media != nil {
+				collectSchemaRefs(media.Schema, out, visited)
+			}
+		}
+	}
+	if op.Responses != nil {
+		for _, respRef := range op.Responses.Map() {
+			if respRef == nil || respRef.Value == nil {
+				continue
+			}
+			for _, media := range respRef.Value.Content {
+				if media != nil {
+					collectSchemaRefs(media.Schema, out, visited)
+				}
+			}
+		}
+	}
+}
+
+// collectSchemaRefs walks a schema tree recording component names it points at.
+// The visited set guards against self-referencing models recursing forever.
+func collectSchemaRefs(ref *openapi3.SchemaRef, out map[string]bool, visited map[*openapi3.Schema]bool) {
+	if ref == nil {
+		return
+	}
+	if name := strings.TrimPrefix(ref.Ref, schemaRefPrefix); name != ref.Ref {
+		out[name] = true
+	}
+	schema := ref.Value
+	if schema == nil || visited[schema] {
+		return
+	}
+	visited[schema] = true
+
+	for _, propRef := range schema.Properties {
+		collectSchemaRefs(propRef, out, visited)
+	}
+	collectSchemaRefs(schema.Items, out, visited)
+	for _, sub := range schema.AllOf {
+		collectSchemaRefs(sub, out, visited)
+	}
+	for _, sub := range schema.AnyOf {
+		collectSchemaRefs(sub, out, visited)
+	}
+	for _, sub := range schema.OneOf {
+		collectSchemaRefs(sub, out, visited)
+	}
+	if schema.AdditionalProperties.Schema != nil {
+		collectSchemaRefs(schema.AdditionalProperties.Schema, out, visited)
+	}
 }

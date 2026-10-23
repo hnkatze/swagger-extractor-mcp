@@ -340,3 +340,67 @@ func paramSchemaType(t *testing.T, tool mcp.Tool, param string) string {
 	typ, _ := schema["type"].(string)
 	return typ
 }
+
+// ---------------------------------------------------------------------------
+// T2 tool surface: list_schemas, deprecated filter, offset (S3/S5/S6)
+// ---------------------------------------------------------------------------
+
+func TestListSchemasTool_HasParams(t *testing.T) {
+	tool := listSchemasTool()
+	assertToolHasParam(t, tool, "url")
+	assertToolHasParam(t, tool, "filter")
+	if got := paramSchemaType(t, tool, "limit"); got != "number" {
+		t.Errorf("limit declared type = %q, want number", got)
+	}
+}
+
+func TestListEndpointsTool_HasDeprecatedAndOffset(t *testing.T) {
+	tool := listEndpointsTool()
+	if got := paramSchemaType(t, tool, "deprecated"); got != "boolean" {
+		t.Errorf("deprecated declared type = %q, want boolean", got)
+	}
+	if got := paramSchemaType(t, tool, "offset"); got != "number" {
+		t.Errorf("offset declared type = %q, want number", got)
+	}
+}
+
+func TestGetOffsetArg(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  interface{}
+		want int
+	}{
+		{"json number", float64(100), 100},
+		{"legacy string", "100", 100},
+		{"absent", nil, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := map[string]interface{}{}
+			if tc.arg != nil {
+				args["offset"] = tc.arg
+			}
+			if got := getOffset(makeRequest(args)); got != tc.want {
+				t.Errorf("getOffset(%v) = %d, want %d", tc.arg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetOptionalBoolArg(t *testing.T) {
+	yes := getOptionalBoolArg(makeRequest(map[string]interface{}{"deprecated": true}), "deprecated")
+	if yes == nil || !*yes {
+		t.Errorf("explicit true should yield a non-nil true, got %v", yes)
+	}
+
+	no := getOptionalBoolArg(makeRequest(map[string]interface{}{"deprecated": false}), "deprecated")
+	if no == nil || *no {
+		t.Errorf("explicit false should yield a non-nil false, got %v", no)
+	}
+
+	absent := getOptionalBoolArg(makeRequest(map[string]interface{}{}), "deprecated")
+	if absent != nil {
+		t.Errorf("absent should yield nil (meaning both), got %v", *absent)
+	}
+}

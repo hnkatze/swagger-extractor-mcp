@@ -50,6 +50,7 @@ func (r *Registry) Register(s *server.MCPServer) {
 	s.AddTool(getEndpointTool(), r.handleGetEndpoint)
 	s.AddTool(getSchemaTool(), r.handleGetSchema)
 	s.AddTool(searchSpecTool(), r.handleSearchSpec)
+	s.AddTool(listSchemasTool(), r.handleListSchemas)
 	s.AddTool(analyzeTagsTool(), r.handleAnalyzeTags)
 	s.AddTool(diffEndpointsTool(), r.handleDiffEndpoints)
 	s.AddTool(specStatusTool(), r.handleSpecStatus)
@@ -75,7 +76,9 @@ func listEndpointsTool() mcp.Tool {
 		mcp.WithString("tag", mcp.Description("Filter by tag (case-insensitive); discover via analyze_tags")),
 		mcp.WithString("method", mcp.Description("Filter by HTTP method")),
 		mcp.WithString("path_pattern", mcp.Description("Filter by path substring, e.g. '/users'")),
+		mcp.WithBoolean("deprecated", mcp.Description("true = only deprecated endpoints, false = only non-deprecated; omit for both")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
+		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -107,6 +110,18 @@ func searchSpecTool() mcp.Tool {
 		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query (case-insensitive)")),
 		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
+		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
+		mcp.WithString("format", mcp.Description("toon (default) or json")),
+	)
+}
+
+func listSchemasTool() mcp.Tool {
+	return mcp.NewTool("list_schemas",
+		mcp.WithDescription("List component schemas with field count and usage (endpoints referencing each). Call get_schema with a name to see its fields. Auto-limited to 50; use filter to narrow."),
+		mcp.WithString("url", mcp.Required(), mcp.Description("Spec URL")),
+		mcp.WithString("filter", mcp.Description("Filter by schema name substring (case-insensitive)")),
+		mcp.WithNumber("limit", mcp.Description("Max results (default 50, 0 = unlimited)")),
+		mcp.WithNumber("offset", mcp.Description("Skip this many results (default 0); use with limit to page")),
 		mcp.WithString("format", mcp.Description("toon (default) or json")),
 	)
 }
@@ -192,6 +207,16 @@ func getBoolArg(req mcp.CallToolRequest, name string) bool {
 	}
 }
 
+// getOptionalBoolArg returns nil when the argument is absent, otherwise a pointer
+// to its value (accepts JSON booleans and "true"/"false" strings).
+func getOptionalBoolArg(req mcp.CallToolRequest, name string) *bool {
+	if _, ok := req.GetArguments()[name]; !ok {
+		return nil
+	}
+	v := getBoolArg(req, name)
+	return &v
+}
+
 // getFormat returns the output format from the request, falling back to config default.
 func (r *Registry) getFormat(req mcp.CallToolRequest) types.OutputFormat {
 	f := strings.ToLower(getStringArg(req, "format"))
@@ -250,6 +275,30 @@ func (r *Registry) getLimit(req mcp.CallToolRequest) int {
 		return n
 	}
 	return r.cfg.DefaultLimit
+}
+
+// getOffset returns the paging offset from the request; 0 when absent or negative.
+func getOffset(req mcp.CallToolRequest) int {
+	if n, ok := getIntArg(req, "offset"); ok && n > 0 {
+		return n
+	}
+	return 0
+}
+
+// pageWindow computes the [start, end) slice of a total-sized result set for the
+// request's offset and limit. truncated is true when more results follow end.
+func (r *Registry) pageWindow(req mcp.CallToolRequest, total int) (start, end int, truncated bool) {
+	start = getOffset(req)
+	if start > total {
+		start = total
+	}
+	end = total
+	limit := r.getLimit(req)
+	if limit > 0 && total-start > limit {
+		end = start + limit
+		truncated = true
+	}
+	return start, end, truncated
 }
 
 // getResolveDepth returns the schema resolution depth from the request.
@@ -321,16 +370,17 @@ func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequ
 	method := getStringArg(req, "method")
 	pathPattern := getStringArg(req, "path_pattern")
 
-	endpoints := analyzer.ListEndpoints(doc, tag, method, pathPattern)
+	endpoints := analyzer.ListEndpoints(doc, analyzer.ListFilter{
+		Tag:         tag,
+		Method:      method,
+		PathPattern: pathPattern,
+		Deprecated:  getOptionalBoolArg(req, "deprecated"),
+	})
 
-	// Apply limit with truncation metadata
+	// Apply offset/limit with truncation metadata
 	total := len(endpoints)
-	limit := r.getLimit(req)
-	truncated := false
-	if limit > 0 && total > limit {
-		endpoints = endpoints[:limit]
-		truncated = true
-	}
+	start, end, truncated := r.pageWindow(req, total)
+	endpoints = endpoints[start:end]
 
 	format := r.getFormat(req)
 
@@ -340,6 +390,7 @@ func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequ
 		result := &types.ListResult{
 			Total:     total,
 			Showing:   len(stripped),
+			Offset:    start,
 			Truncated: truncated,
 			Endpoints: stripped,
 		}
@@ -348,6 +399,7 @@ func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequ
 		result := &types.ListResult{
 			Total:     total,
 			Showing:   len(endpoints),
+			Offset:    start,
 			Truncated: truncated,
 			Endpoints: endpoints,
 		}
@@ -458,14 +510,10 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 		return mcp.NewToolResultText("No endpoints found matching query: " + query), nil
 	}
 
-	// Apply limit with truncation metadata
+	// Apply offset/limit with truncation metadata
 	total := len(results)
-	limit := r.getLimit(req)
-	truncated := false
-	if limit > 0 && total > limit {
-		results = results[:limit]
-		truncated = true
-	}
+	start, end, truncated := r.pageWindow(req, total)
+	results = results[start:end]
 
 	format := r.getFormat(req)
 
@@ -475,6 +523,7 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 		result := &types.ListResult{
 			Total:     total,
 			Showing:   len(stripped),
+			Offset:    start,
 			Truncated: truncated,
 			Endpoints: stripped,
 		}
@@ -483,6 +532,7 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 		result := &types.ListResult{
 			Total:     total,
 			Showing:   len(results),
+			Offset:    start,
 			Truncated: truncated,
 			Endpoints: results,
 		}
@@ -493,6 +543,41 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 		}
 	}
 
+	return mcp.NewToolResultText(output), nil
+}
+
+func (r *Registry) handleListSchemas(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	url := getStringArg(req, "url")
+	if url == "" {
+		return toolError(types.ErrInvalidURL, "url is required"), nil
+	}
+
+	doc, err := r.loadSpec(ctx, url)
+	if err != nil {
+		return toolError(types.ErrFetchFailed, err.Error()), nil
+	}
+
+	schemas := analyzer.ListSchemas(doc, getStringArg(req, "filter"))
+
+	total := len(schemas)
+	start, end, truncated := r.pageWindow(req, total)
+	page := schemas[start:end]
+
+	result := &types.SchemaListResult{
+		Total:     total,
+		Showing:   len(page),
+		Offset:    start,
+		Truncated: truncated,
+		Schemas:   page,
+	}
+
+	if r.getFormat(req) == types.FormatTOON {
+		return mcp.NewToolResultText(formatter.FormatSchemaListTOON(result)), nil
+	}
+	output, fmtErr := formatter.FormatJSON(result)
+	if fmtErr != nil {
+		return toolError(types.ErrInternalError, fmtErr.Error()), nil
+	}
 	return mcp.NewToolResultText(output), nil
 }
 

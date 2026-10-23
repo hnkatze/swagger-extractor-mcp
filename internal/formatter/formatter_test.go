@@ -605,7 +605,7 @@ func TestStripDescriptions_Empty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFormatListHeaderTOON_NotTruncated(t *testing.T) {
-	header := FormatListHeaderTOON(10, 10, false)
+	header := FormatListHeaderTOON(10, 10, 0, false)
 	if !strings.Contains(header, "10 endpoints") {
 		t.Errorf("header = %q, expected total count", header)
 	}
@@ -615,7 +615,7 @@ func TestFormatListHeaderTOON_NotTruncated(t *testing.T) {
 }
 
 func TestFormatListHeaderTOON_Truncated(t *testing.T) {
-	header := FormatListHeaderTOON(790, 50, true)
+	header := FormatListHeaderTOON(790, 50, 0, true)
 	if !strings.Contains(header, "showing 50 of 790") {
 		t.Errorf("header = %q, expected truncation info", header)
 	}
@@ -760,8 +760,8 @@ func TestFormatRefreshResultTOON_VersionPrefix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			result := &types.RefreshResult{
-				URL:            "https://example.com/spec.json",
-				Changed:        false,
+				URL:             "https://example.com/spec.json",
+				Changed:         false,
 				FetchDurationMs: 48028,
 				Summary: types.SpecSummary{
 					Title:         "BipBip Api backoffice",
@@ -789,4 +789,39 @@ func specLine(output string) string {
 		}
 	}
 	return ""
+}
+
+// ---------------------------------------------------------------------------
+// FormatListHeaderTOON — paging (S6)
+// ---------------------------------------------------------------------------
+
+func TestFormatListHeaderTOON_OffsetRange(t *testing.T) {
+	header := FormatListHeaderTOON(840, 50, 50, true)
+
+	if !strings.Contains(header, "showing 51-100 of 840") {
+		t.Errorf("header = %q, want absolute range 51-100", header)
+	}
+	if !strings.Contains(header, "next offset=100") {
+		t.Errorf("header = %q, want the next offset to continue paging", header)
+	}
+}
+
+func TestFormatListHeaderTOON_LastPartialPage(t *testing.T) {
+	// Offset past zero but the page is not truncated: a tail page, no filters hint.
+	header := FormatListHeaderTOON(840, 40, 800, false)
+
+	if !strings.Contains(header, "showing 801-840 of 840") {
+		t.Errorf("header = %q, want absolute range 801-840", header)
+	}
+	if strings.Contains(header, "next offset") {
+		t.Errorf("header = %q, should not offer a next offset on the last page", header)
+	}
+}
+
+func TestFormatListHeaderTOON_OffsetBeyondTotal(t *testing.T) {
+	header := FormatListHeaderTOON(840, 0, 900, false)
+
+	if !strings.Contains(header, "offset 900") || !strings.Contains(header, "840") {
+		t.Errorf("header = %q, want an explicit empty page naming the offset and total", header)
+	}
 }

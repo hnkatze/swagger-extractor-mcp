@@ -29,7 +29,7 @@ func loadTestDoc(t *testing.T) *openapi3.T {
 func TestListEndpoints_All(t *testing.T) {
 	doc := loadTestDoc(t)
 
-	results := ListEndpoints(doc, "", "", "")
+	results := ListEndpoints(doc, ListFilter{})
 	if len(results) != 5 {
 		t.Fatalf("expected 5 endpoints, got %d", len(results))
 	}
@@ -50,12 +50,12 @@ func TestListEndpoints_All(t *testing.T) {
 func TestListEndpoints_FilterByTag(t *testing.T) {
 	doc := loadTestDoc(t)
 
-	pets := ListEndpoints(doc, "pets", "", "")
+	pets := ListEndpoints(doc, ListFilter{Tag: "pets"})
 	if len(pets) != 4 {
 		t.Fatalf("expected 4 'pets' endpoints, got %d", len(pets))
 	}
 
-	store := ListEndpoints(doc, "store", "", "")
+	store := ListEndpoints(doc, ListFilter{Tag: "store"})
 	if len(store) != 1 {
 		t.Fatalf("expected 1 'store' endpoint, got %d", len(store))
 	}
@@ -64,7 +64,7 @@ func TestListEndpoints_FilterByTag(t *testing.T) {
 func TestListEndpoints_FilterByMethod(t *testing.T) {
 	doc := loadTestDoc(t)
 
-	gets := ListEndpoints(doc, "", "GET", "")
+	gets := ListEndpoints(doc, ListFilter{Method: "GET"})
 	if len(gets) != 3 {
 		t.Fatalf("expected 3 GET endpoints, got %d", len(gets))
 	}
@@ -78,7 +78,7 @@ func TestListEndpoints_FilterByMethod(t *testing.T) {
 func TestListEndpoints_FilterByPath(t *testing.T) {
 	doc := loadTestDoc(t)
 
-	results := ListEndpoints(doc, "", "", "/pets")
+	results := ListEndpoints(doc, ListFilter{PathPattern: "/pets"})
 	if len(results) != 4 {
 		t.Fatalf("expected 4 endpoints matching /pets, got %d", len(results))
 	}
@@ -92,7 +92,7 @@ func TestListEndpoints_FilterByPath(t *testing.T) {
 func TestListEndpoints_CombinedFilters(t *testing.T) {
 	doc := loadTestDoc(t)
 
-	results := ListEndpoints(doc, "pets", "POST", "")
+	results := ListEndpoints(doc, ListFilter{Tag: "pets", Method: "POST"})
 	if len(results) != 1 {
 		t.Fatalf("expected 1 endpoint (createPet), got %d", len(results))
 	}
@@ -102,7 +102,7 @@ func TestListEndpoints_CombinedFilters(t *testing.T) {
 }
 
 func TestListEndpoints_NilDoc(t *testing.T) {
-	results := ListEndpoints(nil, "", "", "")
+	results := ListEndpoints(nil, ListFilter{})
 	if results != nil {
 		t.Fatalf("expected nil for nil doc, got %v", results)
 	}
@@ -111,7 +111,7 @@ func TestListEndpoints_NilDoc(t *testing.T) {
 func TestListEndpoints_NoMatch(t *testing.T) {
 	doc := loadTestDoc(t)
 
-	results := ListEndpoints(doc, "nonexistent", "", "")
+	results := ListEndpoints(doc, ListFilter{Tag: "nonexistent"})
 	if len(results) != 0 {
 		t.Fatalf("expected 0 endpoints for nonexistent tag, got %d", len(results))
 	}
@@ -591,5 +591,109 @@ func TestMatchScore(t *testing.T) {
 				t.Errorf("matchScore(%q, %q, op) = %d, want %d", tc.query, tc.path, score, tc.wantScore)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ListEndpoints — deprecated filter (S5)
+// ---------------------------------------------------------------------------
+
+func TestListEndpoints_DeprecatedFilter(t *testing.T) {
+	doc := &openapi3.T{OpenAPI: "3.0.0", Paths: &openapi3.Paths{}}
+	doc.Paths.Set("/current", &openapi3.PathItem{
+		Get: &openapi3.Operation{Summary: "still supported"},
+	})
+	doc.Paths.Set("/legacy", &openapi3.PathItem{
+		Get: &openapi3.Operation{Summary: "going away", Deprecated: true},
+	})
+
+	t.Run("nil keeps both", func(t *testing.T) {
+		got := ListEndpoints(doc, ListFilter{})
+		if len(got) != 2 {
+			t.Fatalf("expected 2 endpoints, got %d", len(got))
+		}
+	})
+
+	t.Run("true keeps only deprecated", func(t *testing.T) {
+		only := true
+		got := ListEndpoints(doc, ListFilter{Deprecated: &only})
+		if len(got) != 1 || got[0].Path != "/legacy" {
+			t.Fatalf("expected only /legacy, got %+v", got)
+		}
+	})
+
+	t.Run("false keeps only current", func(t *testing.T) {
+		only := false
+		got := ListEndpoints(doc, ListFilter{Deprecated: &only})
+		if len(got) != 1 || got[0].Path != "/current" {
+			t.Fatalf("expected only /current, got %+v", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ListSchemas (S3)
+// ---------------------------------------------------------------------------
+
+func TestListSchemas_SortedWithUsage(t *testing.T) {
+	doc := &openapi3.T{OpenAPI: "3.0.0", Paths: &openapi3.Paths{}}
+
+	doc.Components = &openapi3.Components{Schemas: openapi3.Schemas{
+		"Zebra": &openapi3.SchemaRef{Value: openapi3.NewObjectSchema().
+			WithProperty("stripes", openapi3.NewIntegerSchema())},
+		"Alpha": &openapi3.SchemaRef{Value: openapi3.NewObjectSchema().
+			WithProperty("id", openapi3.NewStringSchema()).
+			WithProperty("name", openapi3.NewStringSchema())},
+	}}
+
+	// One endpoint whose request body references Alpha, so usage is not zero.
+	doc.Paths.Set("/alpha", &openapi3.PathItem{
+		Post: &openapi3.Operation{
+			RequestBody: &openapi3.RequestBodyRef{Value: openapi3.NewRequestBody().
+				WithContent(openapi3.Content{
+					"application/json": &openapi3.MediaType{
+						Schema: openapi3.NewSchemaRef("#/components/schemas/Alpha", nil),
+					},
+				})},
+		},
+	})
+
+	got := ListSchemas(doc, "")
+
+	if len(got) != 2 {
+		t.Fatalf("expected 2 schemas, got %d: %+v", len(got), got)
+	}
+	// Deterministic order: map iteration in Go is random.
+	if got[0].Name != "Alpha" || got[1].Name != "Zebra" {
+		t.Fatalf("expected sorted [Alpha Zebra], got [%s %s]", got[0].Name, got[1].Name)
+	}
+	if got[0].FieldCount != 2 {
+		t.Errorf("Alpha FieldCount = %d, want 2", got[0].FieldCount)
+	}
+	if got[0].UsedBy != 1 {
+		t.Errorf("Alpha UsedBy = %d, want 1", got[0].UsedBy)
+	}
+	if got[1].UsedBy != 0 {
+		t.Errorf("Zebra UsedBy = %d, want 0", got[1].UsedBy)
+	}
+}
+
+func TestListSchemas_Filter(t *testing.T) {
+	doc := &openapi3.T{OpenAPI: "3.0.0", Paths: &openapi3.Paths{}}
+	doc.Components = &openapi3.Components{Schemas: openapi3.Schemas{
+		"UserDto":  &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()},
+		"OrderDto": &openapi3.SchemaRef{Value: openapi3.NewObjectSchema()},
+	}}
+
+	got := ListSchemas(doc, "user")
+
+	if len(got) != 1 || got[0].Name != "UserDto" {
+		t.Fatalf("filter 'user' should match only UserDto, got %+v", got)
+	}
+}
+
+func TestListSchemas_NilDoc(t *testing.T) {
+	if got := ListSchemas(nil, ""); got != nil {
+		t.Errorf("expected nil for nil doc, got %+v", got)
 	}
 }

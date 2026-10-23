@@ -87,8 +87,28 @@ type SchemaDetail struct {
 type ListResult struct {
 	Total     int               `json:"total"`
 	Showing   int               `json:"showing"`
+	Offset    int               `json:"offset,omitempty"`
 	Truncated bool              `json:"truncated"`
 	Endpoints []EndpointSummary `json:"endpoints"`
+}
+
+// SchemaInfo is one component schema as seen by list_schemas.
+// UsedBy counts how many endpoints reference it, which is the only way to tell
+// a core model from a one-off DTO when a spec has a thousand of them.
+type SchemaInfo struct {
+	Name        string `json:"name"`
+	FieldCount  int    `json:"field_count"`
+	UsedBy      int    `json:"used_by"`
+	Description string `json:"description,omitempty"`
+}
+
+// SchemaListResult is a paged list of component schemas.
+type SchemaListResult struct {
+	Total     int          `json:"total"`
+	Showing   int          `json:"showing"`
+	Offset    int          `json:"offset,omitempty"`
+	Truncated bool         `json:"truncated"`
+	Schemas   []SchemaInfo `json:"schemas"`
 }
 
 // TagSummary represents tag analysis info.

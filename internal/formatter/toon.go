@@ -326,21 +326,65 @@ func FormatDiffTOON(diff *types.DiffResult) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// FormatListHeaderTOON returns a metadata header for truncated list results.
+// FormatListHeaderTOON returns a metadata header for list results.
 // Example: "# showing 50 of 790 — use tag/method/path_pattern filters to narrow results"
-func FormatListHeaderTOON(total, showing int, truncated bool) string {
-	if !truncated {
-		return fmt.Sprintf("# %d endpoints", total)
+// When an offset is set the header reports the absolute range the page covers and
+// the offset that continues past it, which is the only way a caller can page.
+func FormatListHeaderTOON(total, showing, offset int, truncated bool) string {
+	if offset == 0 {
+		if !truncated {
+			return fmt.Sprintf("# %d endpoints", total)
+		}
+		return fmt.Sprintf("# showing %d of %d — use tag/method/path_pattern filters to narrow results", showing, total)
 	}
-	return fmt.Sprintf("# showing %d of %d — use tag/method/path_pattern filters to narrow results", showing, total)
+	if showing == 0 {
+		return fmt.Sprintf("# no results at offset %d (total %d)", offset, total)
+	}
+	header := fmt.Sprintf("# showing %d-%d of %d", offset+1, offset+showing, total)
+	if truncated {
+		header += fmt.Sprintf(" — next offset=%d", offset+showing)
+	}
+	return header
 }
 
 // FormatListResultTOON formats endpoints with a metadata header when truncated.
 func FormatListResultTOON(result *types.ListResult) string {
 	var b strings.Builder
-	b.WriteString(FormatListHeaderTOON(result.Total, result.Showing, result.Truncated))
+	b.WriteString(FormatListHeaderTOON(result.Total, result.Showing, result.Offset, result.Truncated))
 	b.WriteString("\n")
 	b.WriteString(FormatEndpointsTOON(result.Endpoints))
+	return b.String()
+}
+
+// FormatSchemaListTOON formats a paged schema listing.
+func FormatSchemaListTOON(result *types.SchemaListResult) string {
+	var b strings.Builder
+
+	switch {
+	case result.Offset == 0 && !result.Truncated:
+		b.WriteString(fmt.Sprintf("# %d schemas — get_schema(name) for fields", result.Total))
+	case result.Offset == 0:
+		b.WriteString(fmt.Sprintf("# showing %d of %d — next offset=%d, or filter by name", result.Showing, result.Total, result.Showing))
+	case result.Showing == 0:
+		b.WriteString(fmt.Sprintf("# no results at offset %d (total %d)", result.Offset, result.Total))
+	default:
+		b.WriteString(fmt.Sprintf("# showing %d-%d of %d", result.Offset+1, result.Offset+result.Showing, result.Total))
+		if result.Truncated {
+			b.WriteString(fmt.Sprintf(" — next offset=%d", result.Offset+result.Showing))
+		}
+	}
+	b.WriteString("\n")
+
+	for _, s := range result.Schemas {
+		b.WriteString(s.Name)
+		b.WriteString(fmt.Sprintf(" (%d fields, used by %d)", s.FieldCount, s.UsedBy))
+		if s.Description != "" {
+			b.WriteString(" — ")
+			b.WriteString(s.Description)
+		}
+		b.WriteString("\n")
+	}
+
 	return b.String()
 }
 
