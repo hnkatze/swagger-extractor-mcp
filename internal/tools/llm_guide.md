@@ -6,7 +6,7 @@ document into context. It is built to minimize tokens: responses are compact
 the workflow below to stay efficient.
 
 Every answer comes from the project's **local spec index** — a `swa-mcp/` store
-written by the CLI, never fetched from the network. Index a spec once, in the
+written by the CLI, never fetched while answering. Index a spec once, in the
 project:
 
 ```
@@ -14,8 +14,14 @@ swagger-mcp index <url|file>...     # writes ./swa-mcp/swa-mcp.db
 swagger-mcp index --refresh <src>   # re-read and rewrite the stored copy
 ```
 
+**If you can run shell commands, run those yourself** (you are in the project
+directory, so the store lands where the tools look for it). Only ask the user to
+run them when you have no shell access. Do not ask the user to run a command you
+can run: indexing is the one step that needs a terminal, and everything else is a
+tool call.
+
 Then every tool answers from that store. If nothing is indexed, the tools tell
-you to run `swagger-mcp index`.
+you the exact command to run.
 
 ## Addressing the spec (`spec`)
 
@@ -129,8 +135,8 @@ generate_types(tag="Orders", language="typescript")   → every schema that tag 
 **"Is the indexed copy current?"**
 ```
 spec_status()   → source, etag, fetch time, age, stale yes/no; the `refresh`
-                  field is the `swagger-mcp index --refresh <src>` command a user
-                  runs, never a query
+                  field is the `swagger-mcp index --refresh <src>` command you or
+                  the user run — it is never a query
 ```
 
 **"Which specs does this project index?"**
