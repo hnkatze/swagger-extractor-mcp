@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -18,6 +19,20 @@ const serverName = "swagger-mcp"
 var serverVersion = "0.7.0"
 
 func main() {
+	// `swagger-mcp index ...` is the explicit write path into the local store
+	// (S3). Every other invocation keeps the previous behavior: serve MCP over
+	// stdio.
+	if len(os.Args) > 1 && os.Args[1] == "index" {
+		if err := runIndex(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "[swagger-mcp] index: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	serve()
+}
+
+func serve() {
 	cfg := config.Load()
 
 	mcpServer := server.NewMCPServer(
