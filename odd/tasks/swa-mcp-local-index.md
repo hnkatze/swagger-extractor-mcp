@@ -103,7 +103,7 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | ID | Spec | Route | Commit |
 |----|------|-------|--------|
 | T1 | S2,S3 | done | `ba66e1e feat(store): sqlite spec index and the index command` |
-| T2 | S4 | pending | `feat(tools): resolve specs from the local store` |
+| T2 | S4,S4a | done | `da8822b feat(tools): answer queries from the local spec store` |
 | T3 | S5 | pending | `feat(tools): list_specs and cross-spec search` |
 | T4 | S6 | pending | `feat(tools): report index staleness in spec_status` |
 | T5 | S7 | pending | `docs: local-index usage and distribution` |
