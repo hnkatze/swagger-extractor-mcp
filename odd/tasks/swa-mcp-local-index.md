@@ -106,11 +106,13 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | T2 | S4,S4a | done | `da8822b feat(tools): answer queries from the local spec store` |
 | T3 | S5 | done | `8b76ed7 feat(tools): list_specs, cross-spec sweeps and index staleness` |
 | T4 | S6 | done | (shipped with T3 in `8b76ed7`) |
-| T5 | S7 | pending | `docs: local-index usage and distribution` |
-| T6 | S1 | pending | `test(store): prove queries never touch the network` |
+| T5 | S7 | done | `eb20fd7 docs: rewrite the README for the local index product` |
+| T6 | S1 | done | `d379c44 refactor(loader): delete the dead fetch path` |
 
 Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
-parity). Slice 2 starts at T2.
+parity); slice 2 = `da8822b` (store-backed queries); slice 3 = `8b76ed7`
+(list_specs, sweeps, staleness); slice 4 = `d379c44` + `eb20fd7` (dead fetch path
+deleted, README rewritten).
 
 Risk: item 1 (data) on T1 — a new on-disk format and a writer; item 2 (security)
 on T2 — dropping URL addressing removes the SSRF surface entirely, so the check is
@@ -148,3 +150,27 @@ explico ? ya sea el local o el publiucado, vaya como hace codegraph o engram"
 for storing and querying in both modes; the MCP is only the translator in front
 of it. The transport (stdio/HTTP) does not change the data model. Multi-tenant
 public hosting is explicitly not implied (S7b).
+
+**L10** (evidence, this session):
+- T3/T4 verified by smoke, not just tests: `list_specs` → `# 1 spec indexed`,
+  `list_endpoints {all_specs:true}` → `# 5 endpoints across 1 spec` with
+  `petstore:` prefixes, `diff_endpoints {}` → `DIFF_NEEDS_SPECS`, `spec_status`
+  → age + `stale:false` + the exact refresh command. Fixed the sweep header's
+  `across 1 specs` pluralisation.
+- T5: README rewritten and cross-checked against `internal/tools/tools.go` by
+  diffing every `WithString|Boolean|Number` against the documented table (sets
+  match). Restored the literal `fetch_spec` / `SWAGGER_MCP_DEFAULT_URL` names in
+  the migration note: a migration note that hides the old identifiers is useless,
+  so the grep rule was wrong there and the note wins. Verified in code that
+  `spec_status` really is always JSON (`formatter.FormatJSON`, tools.go:783)
+  before the README claims it.
+- T6: ~3.4k lines deleted (`cache.go`, `diskcache.go`, `progress.go`, most of
+  `loader.go`, their tests) plus dead config fields and env vars; only
+  `ParseDocument`, `PrepareDocument`, `ValidateDocument` remain. An AST guard
+  (`nonetwork_test.go`) fails if the loader imports `net/http`/`net` or exports a
+  function taking a url. Only remaining `net/http` import in non-test code is
+  `cmd/swagger-mcp/index.go`, the explicit indexer read. Also removed dead types
+  (`CacheEntry`, `DiskCacheMeta`, `DiskStats`, `SpecStatus`) that the deletion
+  orphaned.
+- Whole feature: 10 packages green with `CGO_ENABLED=0`, 13 tools, no query path
+  can fetch.
