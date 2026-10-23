@@ -80,9 +80,10 @@ func newSpecSource(workDir string) *specSource {
 // Path is the database file this session reads.
 func (s *specSource) Path() string { return s.path }
 
-// open returns the store, opening it on first use. A missing database file is
-// reported as a missing store instead of being created by a read: only the
-// indexer creates the store (S2, S3).
+// open returns the store, opening it on first use. The query path opens the
+// store read-only: a missing database file is reported as a missing store, and a
+// file that holds no schema is reported instead of being created or migrated
+// (S1, S3).
 func (s *specSource) open() (*store.Store, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -100,7 +101,7 @@ func (s *specSource) openLocked() (*store.Store, error) {
 		}
 		return nil, specErr(codeStoreError, "cannot read the spec store at %s: %v", s.path, err)
 	}
-	st, err := store.Open(filepath.Dir(s.path))
+	st, err := store.OpenReadOnly(filepath.Dir(s.path))
 	if err != nil {
 		return nil, specErr(codeStoreError, "cannot open the spec store at %s: %v", s.path, err)
 	}

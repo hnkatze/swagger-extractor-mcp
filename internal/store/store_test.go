@@ -3,10 +3,12 @@ package store
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,5 +365,144 @@ func TestGetUnknownSpec(t *testing.T) {
 	}
 	if _, err := st.Meta("nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Meta(nope) error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestPutRejectsNameOwnedByAnotherSource covers the data-loss defect: two
+// sources whose derived name is the same must never overwrite each other, so the
+// second source fails and names the source that already owns the name.
+func TestPutRejectsNameOwnedByAnotherSource(t *testing.T) {
+	st := openTempStore(t)
+	original := newRecord(t, "api", "/specs/v1/api.json")
+	original.Title = "V1"
+	mustPut(t, st, original)
+	originalID := specID(t, st, "api")
+
+	intruder := newRecord(t, "api", "/specs/v2/api.json")
+	intruder.Title = "V2"
+	err := st.Put(intruder)
+	if err == nil {
+		t.Fatal("Put overwrote a row owned by a different source")
+	}
+	for _, want := range []string{"/specs/v1/api.json", "--name"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+
+	// The refused write left the original row exactly as it was.
+	specs, listErr := st.List()
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(specs) != 1 {
+		t.Fatalf("refused write left %d rows, want 1: %+v", len(specs), specs)
+	}
+	if specs[0].Name != "api" || specs[0].Source != "/specs/v1/api.json" || specs[0].Title != "V1" {
+		t.Fatalf("row was modified by the refused write: %+v", specs[0])
+	}
+	if got := specID(t, st, "api"); got != originalID {
+		t.Errorf("row id = %d, want the original %d", got, originalID)
+	}
+	if n := countRows(t, st, "endpoints"); n != 5 {
+		t.Errorf("endpoint rows = %d, want the original 5", n)
+	}
+}
+
+// TestOpenReadOnlyDoesNotCreateSchema covers the read path: a query opens the
+// store without creating the file, the directory or the schema.
+func TestOpenReadOnlyDoesNotCreateSchema(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), DirName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create store directory: %v", err)
+	}
+	path := filepath.Join(dir, DBFileName)
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("create empty database file: %v", err)
+	}
+
+	if _, err := OpenReadOnly(dir); err == nil {
+		t.Fatal("OpenReadOnly accepted a database with no schema")
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat database: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("read-only open wrote %d bytes into the empty database", info.Size())
+	}
+
+	db, err := sql.Open("sqlite", readOnlyDSN(path))
+	if err != nil {
+		t.Fatalf("open database for inspection: %v", err)
+	}
+	defer db.Close()
+	var tables int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master").Scan(&tables); err != nil {
+		t.Fatalf("count tables: %v", err)
+	}
+	if tables != 0 {
+		t.Fatalf("read-only open created %d schema objects in the empty database", tables)
+	}
+}
+
+// TestOpenReadOnlyReadsExistingStore keeps the query path working on a store the
+// indexer wrote.
+func TestOpenReadOnlyReadsExistingStore(t *testing.T) {
+	// A store under a directory whose name has a space must open too: project
+	// paths are not always shell-safe.
+	dir := filepath.Join(t.TempDir(), "my project", DirName)
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	mustPut(t, st, newRecord(t, "petstore", "testdata/petstore.json"))
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	ro, err := OpenReadOnly(dir)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	defer ro.Close()
+	specs, err := ro.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(specs) != 1 || specs[0].Name != "petstore" {
+		t.Fatalf("read-only store content = %+v", specs)
+	}
+	rec, err := ro.Get("petstore")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !bytes.Equal(rec.Document, petstoreRaw(t)) {
+		t.Fatal("read-only store returned a different document")
+	}
+}
+
+// TestOpenReadOnlyRejectsNewerSchemaVersion keeps the upgrade message a query
+// must report on a store written by a newer binary.
+func TestOpenReadOnlyRejectsNewerSchemaVersion(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), DirName)
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := st.db.Exec("PRAGMA user_version = 99"); err != nil {
+		t.Fatalf("bump user_version: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err = OpenReadOnly(dir)
+	if err == nil {
+		t.Fatal("OpenReadOnly accepted a store written by a newer schema version")
+	}
+	if !strings.Contains(err.Error(), "upgrade swagger-mcp") {
+		t.Errorf("error %q should report the upgrade message", err)
 	}
 }

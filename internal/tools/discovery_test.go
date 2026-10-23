@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/hnkatze/swagger-mcp-go/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -341,5 +343,60 @@ func TestDiffEndpoints_UnknownNameListsIndexedSpecs(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("error %q should mention %q", text, want)
 		}
+	}
+}
+
+// A sweep header must read like a sentence: one result is "1 endpoint", never
+// "1 endpoints".
+func TestSweepHeader_PluralisesTheCount(t *testing.T) {
+	projectDir(t)
+	indexSpec(t, "petstore", tinySpec(t, "Petstore", "/pets"))
+	r := newRegistry(t)
+
+	res, err := r.handleListEndpoints(context.Background(), makeRequest(map[string]interface{}{"all_specs": true}))
+	if err != nil || res.IsError {
+		t.Fatalf("list_endpoints(all_specs) failed: %v %q", err, extractText(res))
+	}
+	text := extractText(res)
+	if !strings.Contains(text, "# 1 endpoint across 1 spec") {
+		t.Errorf("sweep header should read %q, got %q", "# 1 endpoint across 1 spec", text)
+	}
+	if strings.Contains(text, "1 endpoints") {
+		t.Errorf("sweep header pluralised a single result, got %q", text)
+	}
+}
+
+// The paged sweep header still reports the range and the next offset: the
+// pluralisation fix must not change the other header shapes.
+func TestSweepHeader_KeepsThePagedShape(t *testing.T) {
+	projectDir(t)
+	indexSpec(t, "orders", tinySpec(t, "Orders", "/orders", "/order-items"))
+	r := newRegistry(t)
+
+	res, err := r.handleListEndpoints(context.Background(), makeRequest(map[string]interface{}{
+		"all_specs": true,
+		"limit":     1,
+	}))
+	if err != nil || res.IsError {
+		t.Fatalf("paged sweep failed: %v %q", err, extractText(res))
+	}
+	text := extractText(res)
+	want := "# showing 1 of 2 endpoints across 1 spec — pass spec=<name> to narrow, or page with limit/offset"
+	if !strings.Contains(text, want) {
+		t.Errorf("paged header should read %q, got %q", want, text)
+	}
+}
+
+// A source with a space still gets quoted, and a stored name without one stays
+// bare: the refresh command is a shell command, not a display string.
+func TestRefreshCommand_QuotesOnlyWhatNeedsIt(t *testing.T) {
+	derived := store.SpecMeta{Name: "petstore", Source: "/specs/petstore.json"}
+	if got, want := refreshCommand(derived), "swagger-mcp index --refresh /specs/petstore.json"; got != want {
+		t.Errorf("refreshCommand = %q, want %q", got, want)
+	}
+	spaced := store.SpecMeta{Name: "pet store", Source: "/my specs/api.json"}
+	want := `swagger-mcp index --refresh --name "pet store" "/my specs/api.json"`
+	if got := refreshCommand(spaced); got != want {
+		t.Errorf("refreshCommand = %q, want %q", got, want)
 	}
 }

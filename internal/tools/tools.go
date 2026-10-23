@@ -67,9 +67,11 @@ type toolDef struct {
 }
 
 // definitions is the complete tool surface, in registration order. Indexing is
-// the CLI's job, so there is no fetch and no refresh tool (S3, S4).
+// the CLI's job, so there is no fetch and no refresh tool (S3, S4). Every handler
+// is wrapped so a request that still carries the removed `url` argument is told
+// what replaced it instead of being answered about a different spec.
 func (r *Registry) definitions() []toolDef {
-	return []toolDef{
+	defs := []toolDef{
 		{listSpecsTool(), r.handleListSpecs},
 		{listEndpointsTool(), r.handleListEndpoints},
 		{getEndpointTool(), r.handleGetEndpoint},
@@ -83,6 +85,23 @@ func (r *Registry) definitions() []toolDef {
 		{specStatusTool(), r.handleSpecStatus},
 		{generateTypesTool(), r.handleGenerateTypes},
 		{usageGuideTool(), r.handleUsageGuide},
+	}
+	for i := range defs {
+		defs[i].handler = rejectURLArgument(defs[i].handler)
+	}
+	return defs
+}
+
+// rejectURLArgument turns a request carrying `url` into an explicit error. The
+// parameter is gone (S4a), and silently ignoring it would answer about the only
+// indexed spec while the caller believes it asked about another document.
+func rejectURLArgument(next server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if stale := strings.TrimSpace(getStringArg(req, "url")); stale != "" {
+			return toolError(types.ErrInvalidQuery,
+				"the url argument is gone: specs are indexed with `swagger-mcp index <url|file>` and queries address `spec=<name>` (run list_specs to see the indexed names)"), nil
+		}
+		return next(ctx, req)
 	}
 }
 
@@ -776,7 +795,7 @@ func (r *Registry) handleSpecStatus(ctx context.Context, req mcp.CallToolRequest
 		AgeSeconds:     int64(age.Seconds()),
 		Stale:          stale,
 		StaleAfterDays: int(staleAfter.Hours()) / 24,
-		Refresh:        refreshCommand(meta.Source),
+		Refresh:        refreshCommand(meta),
 		EndpointCount:  meta.EndpointCount,
 		SchemaCount:    meta.SchemaCount,
 		Store:          r.specs.Path(),

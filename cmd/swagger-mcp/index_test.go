@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -88,29 +89,6 @@ components:
 		t.Fatalf("write yaml fixture: %v", err)
 	}
 	return path
-}
-
-// TestDeriveName covers name derivation from files and URLs, which is the
-// addressing key for every later task.
-func TestDeriveName(t *testing.T) {
-	cases := []struct {
-		source string
-		want   string
-	}{
-		{"testdata/petstore.json", "petstore"},
-		{"/tmp/specs/billing-api.yaml", "billing-api"},
-		{`C:\work\specs\payments.yml`, "payments"},
-		{"https://example.com/openapi/petstore.json", "petstore"},
-		{"https://example.com/openapi/petstore.json?version=2", "petstore"},
-		{"https://example.com/", "example.com"},
-		{"https://example.com", "example.com"},
-		{"", "spec"},
-	}
-	for _, tc := range cases {
-		if got := deriveName(tc.source); got != tc.want {
-			t.Errorf("deriveName(%q) = %q, want %q", tc.source, got, tc.want)
-		}
-	}
 }
 
 // TestRunIndexFromLocalFixture covers the core S3 write: one file in, one row
@@ -323,4 +301,123 @@ func TestIndex_AcceptsSpecsTheServerNormalizes(t *testing.T) {
 	}
 
 	runIndexOut(t, source)
+}
+
+// writeSpecFile writes a small valid spec whose title and path identify it, so a
+// test can tell two indexed sources apart by their stored title.
+func writeSpecFile(t *testing.T, path, title string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create directory for %s: %v", path, err)
+	}
+	spec := `openapi: 3.0.3
+info:
+  title: ` + title + `
+  version: 1.0.0
+paths:
+  /` + title + `:
+    get:
+      summary: ` + title + `
+      responses:
+        '200':
+          description: ok
+`
+	if err := os.WriteFile(path, []byte(spec), 0o644); err != nil {
+		t.Fatalf("write spec %s: %v", path, err)
+	}
+	return path
+}
+
+// TestRunIndexRejectsDerivedNameCollision covers the data-loss scenario the
+// verifier reproduced: two files that share a base name must not overwrite each
+// other, and the second one has to fail naming the source that owns the name.
+func TestRunIndexRejectsDerivedNameCollision(t *testing.T) {
+	dir := workdir(t)
+	v1 := writeSpecFile(t, filepath.Join(t.TempDir(), "v1", "api.json"), "V1")
+	v2 := writeSpecFile(t, filepath.Join(t.TempDir(), "v2", "api.json"), "V2")
+
+	runIndexOut(t, v1)
+
+	err := runIndex([]string{v2}, io.Discard)
+	if err == nil {
+		t.Fatal("indexing a second source with the same derived name succeeded: the first spec was lost")
+	}
+	for _, want := range []string{v1, "--name"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+
+	specs, listErr := openStoreFromDir(t, dir).List()
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(specs) != 1 {
+		t.Fatalf("store holds %d rows, want the original one: %+v", len(specs), specs)
+	}
+	if specs[0].Name != "api" || specs[0].Source != v1 || specs[0].Title != "V1" {
+		t.Fatalf("original row was replaced: %+v", specs[0])
+	}
+}
+
+// TestRunIndexCustomNameRefreshKeepsUpdating covers the surviving behavior:
+// a spec indexed under --name stays addressable by that name across refreshes.
+func TestRunIndexCustomNameRefreshKeepsUpdating(t *testing.T) {
+	dir := workdir(t)
+	source := writeSpecFile(t, filepath.Join(t.TempDir(), "v1", "api.json"), "Billing")
+
+	runIndexOut(t, "--name", "billing", source)
+	st := openStoreFromDir(t, dir)
+	first, err := st.Meta("billing")
+	if err != nil {
+		t.Fatalf("Meta after first index: %v", err)
+	}
+
+	out := runIndexOut(t, "--refresh", "--name", "billing", source)
+	if !strings.Contains(out, "indexed billing") {
+		t.Errorf("refresh printed %q, want a report for the billing name", out)
+	}
+	second, err := st.Meta("billing")
+	if err != nil {
+		t.Fatalf("Meta after refresh: %v", err)
+	}
+	if !second.FetchedAt.After(first.FetchedAt) {
+		t.Errorf("--refresh did not rewrite the stored copy: %v then %v", first.FetchedAt, second.FetchedAt)
+	}
+	specs, err := st.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(specs) != 1 || specs[0].Name != "billing" {
+		t.Fatalf("refresh changed the stored names: %+v", specs)
+	}
+}
+
+// TestIndexRejectsSourceOverSizeLimit covers the silent truncation: a source
+// larger than the read cap must fail instead of being stored cut off.
+func TestIndexRejectsSourceOverSizeLimit(t *testing.T) {
+	dir := workdir(t)
+	source := filepath.Join(t.TempDir(), "api.json")
+	if err := os.WriteFile(source, bytes.Repeat([]byte(" "), 4096), 0o644); err != nil {
+		t.Fatalf("write oversized source: %v", err)
+	}
+
+	st := openStoreFromDir(t, dir)
+	ix := &specIndexer{store: st, maxSize: 512, out: io.Discard}
+	err := ix.index(context.Background(), source, "", false)
+	if err == nil {
+		t.Fatal("a source larger than the read cap was indexed")
+	}
+	for _, want := range []string{"512", source} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
+	}
+	specs, listErr := st.List()
+	if listErr != nil {
+		t.Fatalf("List: %v", listErr)
+	}
+	if len(specs) != 0 {
+		t.Fatalf("oversized source wrote %d rows: %+v", len(specs), specs)
+	}
 }

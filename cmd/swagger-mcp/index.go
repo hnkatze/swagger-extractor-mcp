@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -119,7 +117,7 @@ func (ix *specIndexer) index(ctx context.Context, source, nameOverride string, r
 
 	name := nameOverride
 	if name == "" {
-		name = deriveName(source)
+		name = store.DeriveName(source)
 	}
 
 	rec := store.NewRecord(doc, raw)
@@ -152,15 +150,25 @@ func (ix *specIndexer) index(ctx context.Context, source, nameOverride string, r
 // source key stored with the spec. Files use their absolute path so the same
 // file reached by a different relative path is still the same source.
 func (ix *specIndexer) readSource(ctx context.Context, source string) (raw []byte, etag, canonical string, err error) {
-	if isHTTPURL(source) {
+	if store.IsURL(source) {
 		return ix.readURL(ctx, source)
 	}
 	abs, err := filepath.Abs(source)
 	if err != nil {
 		return nil, "", "", err
 	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if err := ix.checkSize(info.Size()); err != nil {
+		return nil, "", "", err
+	}
 	raw, err = os.ReadFile(abs)
 	if err != nil {
+		return nil, "", "", err
+	}
+	if err := ix.checkSize(int64(len(raw))); err != nil {
 		return nil, "", "", err
 	}
 	return raw, "", abs, nil
@@ -184,13 +192,28 @@ func (ix *specIndexer) readURL(ctx context.Context, source string) ([]byte, stri
 	}
 	reader := io.Reader(resp.Body)
 	if ix.maxSize > 0 {
-		reader = io.LimitReader(resp.Body, ix.maxSize)
+		// One byte past the cap: a body that fills the extra byte is over the
+		// limit, which the caller reports instead of indexing a cut-off document.
+		reader = io.LimitReader(resp.Body, ix.maxSize+1)
 	}
 	raw, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, "", "", err
 	}
+	if err := ix.checkSize(int64(len(raw))); err != nil {
+		return nil, "", "", err
+	}
 	return raw, resp.Header.Get("ETag"), source, nil
+}
+
+// checkSize refuses a source larger than the read cap. The cap used to truncate
+// in silence, so a cut-off YAML could validate into a wrong document; failing is
+// the only safe answer.
+func (ix *specIndexer) checkSize(size int64) error {
+	if ix.maxSize > 0 && size > ix.maxSize {
+		return fmt.Errorf("source is %d bytes, over the %d-byte spec size limit: it was not indexed (index a smaller document)", size, ix.maxSize)
+	}
+	return nil
 }
 
 // parseAndValidate parses with kin-openapi and applies the same relaxed
@@ -220,46 +243,4 @@ func summarizeViolations(violations []string) string {
 		msg = fmt.Sprintf("%s (and %d more)", msg, rest)
 	}
 	return msg
-}
-
-// deriveName turns a source into the store name used to address the spec.
-func deriveName(source string) string {
-	trimmed := strings.TrimSpace(source)
-	if trimmed == "" {
-		return "spec"
-	}
-
-	var base string
-	if isHTTPURL(trimmed) {
-		if u, err := url.Parse(trimmed); err == nil {
-			base = path.Base(strings.TrimRight(u.Path, "/"))
-			if base == "." || base == "/" || base == "" {
-				base = u.Hostname()
-			}
-		}
-	}
-	if base == "" {
-		base = path.Base(strings.ReplaceAll(trimmed, `\`, "/"))
-	}
-
-	if ext := path.Ext(base); ext != "" {
-		switch strings.ToLower(ext) {
-		case ".json", ".yaml", ".yml":
-			base = strings.TrimSuffix(base, ext)
-		}
-	}
-
-	base = strings.TrimSpace(base)
-	if base == "" || base == "." || base == "/" {
-		return "spec"
-	}
-	return base
-}
-
-func isHTTPURL(raw string) bool {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil {
-		return false
-	}
-	return (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
 }

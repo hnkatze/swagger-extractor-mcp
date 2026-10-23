@@ -145,7 +145,8 @@ my-app/
   `internal/store` keeps a single writer per file, so it is not a shared
   multi-tenant database.
 - **Created by the indexer, never by hand.** A query that finds no store fails
-  with `NO_STORE` instead of creating one.
+  with `NO_STORE` instead of creating one, and the query layer opens the database
+  read-only: it never creates the file, the schema or a migration.
 - **Discovery walks up.** Starting from the working directory, the server and the
   indexer use the nearest `swa-mcp/` directory it finds above it, falling back to
   `<cwd>/swa-mcp`.
@@ -159,11 +160,23 @@ my-app/
 ```bash
 swagger-mcp index https://api.example.com/openapi.json          # idempotent
 swagger-mcp index --refresh https://api.example.com/openapi.json # force a rewrite
-swagger-mcp index --name petstore-v3 ./openapi.json             # pin the spec name
+swagger-mcp index --name petstore-v3 ./openapi.json             # store it under a name you choose
 ```
 
-- Reindexing the same source updates the existing row in place — it never
-  duplicates a spec.
+- Reindexing the same source updates its row in place — it never duplicates a
+  spec, with or without `--refresh`.
+- A name addresses exactly one source. Indexing a source whose name is derived to
+  one that already belongs to a **different** source fails instead of replacing
+  it:
+
+  ```
+  $ swagger-mcp index v1/api.json v2/api.json
+  indexed api: Billing API 1.0.0 (5 endpoints, 4 schemas)
+  v2/api.json: cannot index v2/api.json as "api": that name already belongs to
+    v1/api.json; pass --name to index this spec under a different name
+  ```
+
+  Nothing is written for the refused source, and the first spec is untouched.
 - Without `--refresh`, an unchanged document is reported and **not** rewritten:
 
   ```
@@ -175,6 +188,12 @@ swagger-mcp index --name petstore-v3 ./openapi.json             # pin the spec n
 - `--name` sets the addressable name instead of the derived one. It accepts a
   single source only. The default name is the base name of the file or URL path
   without `.json`/`.yaml`/`.yml` (a URL with no path falls back to the hostname).
+- A source larger than the size limit is refused, never truncated: a cut-off
+  document could otherwise parse into a different API.
+- `spec_status` prints the refresh command that keeps the stored name:
+  `swagger-mcp index --refresh --name billing https://api.example.com/v1/api.json`
+  whenever the name was not derived from the source, so copying it can neither
+  rename the spec nor collide with another source.
 
 Indexing validates first: a spec that fails validation is rejected and nothing is
 written. It is validated with the same relaxed rules the query layer uses, so a
@@ -214,7 +233,9 @@ indexing is a CLI command.
   indexed names is returned so the caller can correct itself.
 - **Nothing indexed** — the call fails with `NO_STORE` and names
   `swagger-mcp index`.
-- No tool accepts a `url`. Addressing is by name, never by URL.
+- No tool accepts a `url`. Addressing is by name, never by URL, and a call that
+  still sends one fails with `INVALID_QUERY` explaining that specs are indexed
+  with `swagger-mcp index` and queried with `spec=<name>`.
 
 ### Sweeping every spec
 
@@ -242,15 +263,15 @@ expensive call shape; prefer `spec=<name>` unless you really want the whole stor
 
 ```json
 {
-  "name": "openapi",
-  "source": "https://api.example.com/openapi.json",
+  "name": "billing",
+  "source": "https://api.example.com/v1/api.json",
   "etag": "\"abc123\"",
   "fetched_at": "2026-02-10T09:11:02Z",
   "age": "9d3h",
   "age_seconds": 795420,
   "stale": true,
   "stale_after_days": 7,
-  "refresh": "swagger-mcp index --refresh https://api.example.com/openapi.json",
+  "refresh": "swagger-mcp index --refresh --name billing https://api.example.com/v1/api.json",
   "endpoint_count": 43,
   "schema_count": 17,
   "store": "/home/you/proyectos/my-app/swa-mcp/swa-mcp.db"
@@ -261,8 +282,9 @@ Keys and the `stale_after_days` value are exact; the values are an illustration.
 
 A stored copy older than **7 days** is reported as `stale: true`. Nothing is
 refreshed automatically: `spec_status` is read-only, no tool fetches anything, and
-the `refresh` field carries the exact command a human runs. Reindexing is always
-explicit.
+the `refresh` field carries the exact command a human runs — including
+`--name <stored name>` when the name was chosen rather than derived, so the
+command refreshes that spec instead of renaming it. Reindexing is always explicit.
 
 ## Errors you may hit
 
@@ -271,6 +293,7 @@ Failures come back as tool errors prefixed with a stable code.
 | Code | Meaning | What to do |
 |------|---------|------------|
 | `NO_STORE` | No store in this project, or an empty one — the message names the path it looked for. | Run `swagger-mcp index <url\|file>` in this project; check the client's working directory (the server logs the store it resolved). |
+| `INVALID_QUERY` | An argument was rejected: a tool call that still sends `url`, or `search_spec` without a `query`. | Drop `url` (specs are indexed with `swagger-mcp index`, addressed with `spec=<name>`) and pass the required arguments. |
 | `SPEC_AMBIGUOUS` | Several specs are indexed and no `spec` was passed. The message lists them. | Pass `spec=<name>` (names come from `list_specs`), or `all_specs=true` to sweep. |
 | `SPEC_NOT_FOUND` | The requested name is not indexed. The message lists the indexed names. | Retry with one of the listed names, or index the spec you meant. |
 | `DIFF_NEEDS_SPECS` | Fewer than two specs are indexed, so there is nothing to compare. | `swagger-mcp index` the second spec (or the older version), then diff by name. |

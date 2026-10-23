@@ -166,19 +166,21 @@ type sweptSchemasReport struct {
 }
 
 // sweepHeaderTOON is the one-line header every sweep shares: how many results
-// there are, how many are shown, and how to narrow the sweep.
+// there are, how many are shown, and how to narrow the sweep. what is the
+// singular noun of the count ("endpoint", "match", "schema").
 func sweepHeaderTOON(what string, total, showing, offset int, truncated bool, specs int) string {
+	results := plural(total, what)
 	scope := fmt.Sprintf("across %s", plural(specs, "spec"))
 	switch {
 	case offset == 0 && !truncated:
-		return fmt.Sprintf("# %d %s %s", total, what, scope)
+		return fmt.Sprintf("# %s %s", results, scope)
 	case showing == 0:
-		return fmt.Sprintf("# no results at offset %d (total %d %s)", offset, total, scope)
+		return fmt.Sprintf("# no results at offset %d (total %s %s)", offset, results, scope)
 	case offset == 0:
-		return fmt.Sprintf("# showing %d of %d %s %s — pass spec=<name> to narrow, or page with limit/offset",
-			showing, total, what, scope)
+		return fmt.Sprintf("# showing %d of %s %s — pass spec=<name> to narrow, or page with limit/offset",
+			showing, results, scope)
 	default:
-		header := fmt.Sprintf("# showing %d-%d of %d %s %s", offset+1, offset+showing, total, what, scope)
+		header := fmt.Sprintf("# showing %d-%d of %s %s", offset+1, offset+showing, results, scope)
 		if truncated {
 			header += fmt.Sprintf(" — next offset=%d", offset+showing)
 		}
@@ -227,7 +229,7 @@ func (r *Registry) handleListEndpointsAllSpecs(req mcp.CallToolRequest) (*mcp.Ca
 	}
 
 	var b strings.Builder
-	b.WriteString(sweepHeaderTOON("endpoints", total, len(page), start, truncated, len(metas)))
+	b.WriteString(sweepHeaderTOON("endpoint", total, len(page), start, truncated, len(metas)))
 	b.WriteString("\n")
 	b.WriteString(strings.Join(sweptEndpointLines(page), "\n"))
 	return mcp.NewToolResultText(b.String()), nil
@@ -289,7 +291,7 @@ func (r *Registry) handleSearchSpecAllSpecs(req mcp.CallToolRequest) (*mcp.CallT
 	}
 
 	var b strings.Builder
-	b.WriteString(sweepHeaderTOON("matches", total, len(page), start, truncated, len(metas)))
+	b.WriteString(sweepHeaderTOON("match", total, len(page), start, truncated, len(metas)))
 	b.WriteString("\n")
 	b.WriteString(strings.Join(sweptEndpointLines(page), "\n"))
 	return mcp.NewToolResultText(b.String()), nil
@@ -330,7 +332,7 @@ func (r *Registry) handleListSchemasAllSpecs(req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	var b strings.Builder
-	b.WriteString(sweepHeaderTOON("schemas", total, len(page), start, truncated, len(metas)))
+	b.WriteString(sweepHeaderTOON("schema", total, len(page), start, truncated, len(metas)))
 	b.WriteString("\n")
 	for i, schema := range page {
 		if i > 0 {
@@ -433,11 +435,25 @@ func humanAge(d time.Duration) string {
 
 // refreshCommand is the exact command that rewrites this spec's stored copy. It
 // is printed, never run: refreshing is explicit (S6).
-func refreshCommand(source string) string {
-	if strings.ContainsAny(source, " \t") {
-		source = `"` + source + `"`
+//
+// It must be copy-pasteable: the indexer derives a spec's name from its source,
+// so a spec stored under a different name would be renamed by the printed
+// command (and could collide with another source's row). When the stored name is
+// not the derived one, the command carries it explicitly.
+func refreshCommand(meta store.SpecMeta) string {
+	command := "swagger-mcp index --refresh"
+	if store.DeriveName(meta.Source) != meta.Name {
+		command += " --name " + shellQuote(meta.Name)
 	}
-	return fmt.Sprintf("swagger-mcp index --refresh %s", source)
+	return command + " " + shellQuote(meta.Source)
+}
+
+// shellQuote wraps an argument that a shell would otherwise split.
+func shellQuote(value string) string {
+	if strings.ContainsAny(value, " \t") {
+		return `"` + value + `"`
+	}
+	return value
 }
 
 // indexedCount describes what the store holds, for errors that have to say what

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -448,5 +449,128 @@ func TestSpecStatus_ReportsStoredMetadata(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("status should report %q, got %q", want, text)
 		}
+	}
+}
+
+// indexSpecFrom is indexSpec with an explicit canonical source, so a test can
+// build a spec whose stored name differs from the name derived from its source.
+func indexSpecFrom(t *testing.T, name, source string, raw []byte) {
+	t.Helper()
+	dir, err := store.DirFor(".")
+	if err != nil {
+		t.Fatalf("locate store: %v", err)
+	}
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	doc, err := loader.ParseDocument(raw)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	loader.PrepareDocument(doc)
+
+	rec := store.NewRecord(doc, raw)
+	rec.Name = name
+	rec.Source = source
+	rec.FetchedAt = time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := st.Put(rec); err != nil {
+		t.Fatalf("store fixture %q: %v", name, err)
+	}
+}
+
+// A query must never write: opening a store that holds no schema reports the
+// problem and leaves the file exactly as it was.
+func TestQuery_EmptyDatabaseIsNotMigratedByAQuery(t *testing.T) {
+	dir := projectDir(t)
+	storeDir := filepath.Join(dir, store.DirName)
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("create store directory: %v", err)
+	}
+	path := filepath.Join(storeDir, store.DBFileName)
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("create empty database file: %v", err)
+	}
+
+	res, err := newRegistry(t).handleListEndpoints(context.Background(), makeRequest(map[string]interface{}{}))
+	if err != nil {
+		t.Fatalf("handleListEndpoints error: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("a query against an empty database must fail, got %q", extractText(res))
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat database: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("the query wrote %d bytes into the empty database", info.Size())
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	if err != nil {
+		t.Fatalf("open database for inspection: %v", err)
+	}
+	defer db.Close()
+	var tables int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master").Scan(&tables); err != nil {
+		t.Fatalf("count tables: %v", err)
+	}
+	if tables != 0 {
+		t.Fatalf("the query created %d schema objects", tables)
+	}
+}
+
+// An old client that still sends url must be told that addressing changed,
+// instead of quietly getting an answer about a different spec.
+func TestToolCalls_RejectURLEarned(t *testing.T) {
+	projectDir(t)
+	indexSpec(t, "petstore", tinySpec(t, "Petstore", "/pets"))
+	r := newRegistry(t)
+	ctx := context.Background()
+
+	for _, def := range r.definitions() {
+		t.Run(def.tool.Name, func(t *testing.T) {
+			res, err := def.handler(ctx, makeRequest(map[string]interface{}{
+				"url":    "https://example.com/openapi.json",
+				"method": "get",
+				"path":   "/pets",
+				"name":   "Pet",
+				"query":  "pets",
+				"tag":    "pets",
+				"schema": "Pet",
+			}))
+			if err != nil {
+				t.Fatalf("handler error: %v", err)
+			}
+			if !res.IsError {
+				t.Fatalf("a call carrying url must be an error, got %q", extractText(res))
+			}
+			text := extractText(res)
+			for _, want := range []string{"url", "swagger-mcp index", "spec=<name>"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("error %q should mention %q", text, want)
+				}
+			}
+		})
+	}
+}
+
+// The refresh command spec_status prints must be copy-pasteable: when the stored
+// name is not the name derived from the source, it has to carry --name.
+func TestSpecStatus_RefreshCommandPinsCustomName(t *testing.T) {
+	projectDir(t)
+	indexSpecFrom(t, "billing", "https://api.example.com/v1/api.json", tinySpec(t, "Billing", "/invoices"))
+	r := newRegistry(t)
+
+	res, err := r.handleSpecStatus(context.Background(), makeRequest(map[string]interface{}{}))
+	if err != nil || res.IsError {
+		t.Fatalf("spec_status failed: %v %q", err, extractText(res))
+	}
+	want := `"refresh": "swagger-mcp index --refresh --name billing https://api.example.com/v1/api.json"`
+	if text := extractText(res); !strings.Contains(text, want) {
+		t.Errorf("status should report %q, got %q", want, text)
 	}
 }

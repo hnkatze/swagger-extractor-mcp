@@ -118,16 +118,15 @@ func (s *Store) Close() error { return s.db.Close() }
 
 // migrate creates the schema or validates the version of an existing one.
 func (s *Store) migrate() error {
-	var version int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
-		return fmt.Errorf("read schema version of %s: %w", s.path, err)
+	version, err := s.schemaVersion()
+	if err != nil {
+		return err
 	}
 	if version == SchemaVersion {
 		return nil
 	}
 	if version > SchemaVersion {
-		return fmt.Errorf("store %s uses schema version %d, but this build supports %d: upgrade swagger-mcp",
-			s.path, version, SchemaVersion)
+		return newerSchemaError(s.path, version)
 	}
 
 	tx, err := s.db.Begin()
@@ -169,6 +168,18 @@ func (s *Store) Put(rec Record) error {
 		return fmt.Errorf("store spec %q: %w", rec.Name, err)
 	}
 	defer tx.Rollback()
+
+	// A name addresses exactly one spec: taking over the name of another source
+	// would delete that spec from the index, so it is refused and the caller is
+	// told how to store this one under a name of its own.
+	var existingSource string
+	switch err := tx.QueryRow("SELECT source FROM specs WHERE name = ?", rec.Name).Scan(&existingSource); {
+	case err == nil && existingSource != rec.Source:
+		return fmt.Errorf("cannot index %s as %q: that name already belongs to %s; pass --name to index this spec under a different name",
+			rec.Source, rec.Name, existingSource)
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("store spec %q: %w", rec.Name, err)
+	}
 
 	// A source addresses exactly one row: indexing it under a new name replaces
 	// the old row instead of leaving a duplicate behind.
@@ -328,4 +339,76 @@ func scanMeta(row rowScanner) (SpecMeta, error) {
 		return SpecMeta{}, fmt.Errorf("spec %q has an invalid fetched_at %q: %w", meta.Name, fetchedAt, err)
 	}
 	return meta, nil
+}
+
+// OpenReadOnly opens an existing store for queries. Unlike Open it never creates
+// the directory, the database file or the schema, and it never migrates: a query
+// is not allowed to write (S1, S3). A store whose layout this build cannot read
+// is reported with the same version error the indexer uses.
+func OpenReadOnly(dir string) (*Store, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve store directory %s: %w", dir, err)
+	}
+	path := filepath.Join(absDir, DBFileName)
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("open store %s: %w", path, err)
+	}
+
+	db, err := sql.Open("sqlite", readOnlyDSN(path))
+	if err != nil {
+		return nil, fmt.Errorf("open store %s: %w", path, err)
+	}
+	// One reader per store keeps the per-connection pragmas in effect, exactly
+	// like the writer side.
+	db.SetMaxOpenConns(1)
+
+	for _, pragma := range []string{
+		"PRAGMA busy_timeout = 5000",
+		"PRAGMA foreign_keys = ON",
+	} {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("prepare read-only store %s (%s): %w", path, pragma, err)
+		}
+	}
+
+	s := &Store{dir: absDir, path: path, db: db}
+	version, err := s.schemaVersion()
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if version != SchemaVersion {
+		db.Close()
+		if version > SchemaVersion {
+			return nil, newerSchemaError(path, version)
+		}
+		return nil, fmt.Errorf("store %s has no usable schema (version %d, want %d): run `swagger-mcp index` to create it",
+			path, version, SchemaVersion)
+	}
+	return s, nil
+}
+
+// readOnlyDSN is the connection string that makes SQLite refuse every write. It
+// is a URI so the mode parameter reaches SQLite (the driver opens with
+// SQLITE_OPEN_URI).
+func readOnlyDSN(path string) string {
+	return "file:" + filepath.ToSlash(path) + "?mode=ro"
+}
+
+// schemaVersion reads PRAGMA user_version of this store.
+func (s *Store) schemaVersion() (int, error) {
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return 0, fmt.Errorf("read schema version of %s: %w", s.path, err)
+	}
+	return version, nil
+}
+
+// newerSchemaError is the message an older binary reports for a store written by
+// a newer one, whether it opened it for writing or for querying.
+func newerSchemaError(path string, version int) error {
+	return fmt.Errorf("store %s uses schema version %d, but this build supports %d: upgrade swagger-mcp",
+		path, version, SchemaVersion)
 }
