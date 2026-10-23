@@ -254,7 +254,9 @@ func TestHandlers_NoStoreErrorNamesIndexCommand(t *testing.T) {
 	}
 
 	for _, def := range r.definitions() {
-		if def.tool.Name == "usage_guide" {
+		// usage_guide reads nothing, and index_spec is the write path: it has no
+		// query to answer about a missing store (S13).
+		if def.tool.Name == "usage_guide" || def.tool.Name == "index_spec" {
 			continue
 		}
 		t.Run(def.tool.Name, func(t *testing.T) {
@@ -312,8 +314,8 @@ func TestQuery_AnswersFromStoreNotFromSource(t *testing.T) {
 	}
 }
 
-// The tool surface itself must have no way to address a URL and no fetch tool:
-// indexing is the CLI's job (S4a).
+// The query surface itself must have no way to address a URL and no fetch tool:
+// only index_spec reads a source (S4a, S13).
 func TestToolSurface_AddressesSpecsNeverURLs(t *testing.T) {
 	r := newRegistry(t)
 	defs := r.definitions()
@@ -324,10 +326,11 @@ func TestToolSurface_AddressesSpecsNeverURLs(t *testing.T) {
 	}
 	for _, gone := range []string{"fetch_spec", "refresh_spec"} {
 		if names[gone] {
-			t.Errorf("%q must not be a tool any more: indexing is the CLI's job", gone)
+			t.Errorf("%q must not be a tool any more: only index_spec reads a source", gone)
 		}
 	}
 	for _, want := range []string{
+		"index_spec",
 		"list_endpoints", "get_endpoint", "get_schema", "search_spec", "list_schemas",
 		"security_schemes", "validate_spec", "analyze_tags", "diff_endpoints",
 		"spec_status", "generate_types", "usage_guide",
@@ -338,6 +341,17 @@ func TestToolSurface_AddressesSpecsNeverURLs(t *testing.T) {
 	}
 
 	for _, def := range defs {
+		if def.tool.Name == "index_spec" {
+			// The one write path: it takes a source, not a spec name, and its
+			// refresh is the explicit re-read S13 requires.
+			if _, ok := def.tool.InputSchema.Properties["source"]; !ok {
+				t.Error("index_spec must take source")
+			}
+			if _, ok := def.tool.InputSchema.Properties["url"]; ok {
+				t.Error("index_spec must take source, not the removed url argument")
+			}
+			continue
+		}
 		for param := range def.tool.InputSchema.Properties {
 			switch param {
 			case "url", "url_old", "url_new", "refresh":

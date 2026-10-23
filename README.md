@@ -73,8 +73,25 @@ Sources can be URLs or local files, and you can pass several at once:
 swagger-mcp index ./openapi.yaml https://api.example.com/openapi.json
 ```
 
-The command creates `./swa-mcp/swa-mcp.db` if it does not exist. Only `index`
-and `unindex` write to that file; `swagger-mcp help` lists the subcommands.
+The command creates `./swa-mcp/swa-mcp.db` if it does not exist. `swagger-mcp
+help` lists the subcommands.
+
+#### Indexing from an agent without a shell
+
+A client that cannot run commands does the same thing with the `index_spec`
+tool, and gets the same size cap, validation rules, refusals and store:
+
+```
+index_spec(source="./openapi.yaml")                    → index a local file
+index_spec(source="https://api.example.com/api.json")  → index a URL
+index_spec(source="./openapi.yaml", name="billing-v2") → choose the store name
+index_spec(source="./openapi.yaml", refresh=true)      → rewrite the stored copy
+```
+
+It answers with the name, title, version, endpoint/schema counts and the store
+path. `index_spec` is the only tool that reads a source or touches the network;
+every other tool is a read-only query over the store, so an agent can index and
+then query in one session without a shell. `unindex` remains CLI-only.
 
 ### 3. Register the MCP server
 
@@ -146,7 +163,8 @@ my-app/
   multi-tenant database.
 - **Created by the indexer, never by hand.** A query that finds no store fails
   with `NO_STORE` instead of creating one, and the query layer opens the database
-  read-only: it never creates the file, the schema or a migration.
+  read-only: it never creates the file, the schema or a migration. The two
+  indexers — `swagger-mcp index` and the `index_spec` tool — create it.
 - **Discovery is SQL, detail is the document.** `list_specs`, `list_endpoints`,
   `list_schemas`, `analyze_tags` and `search_spec` answer from the store's
   catalog tables, so listing or searching a large spec never decompresses or
@@ -236,13 +254,16 @@ swagger-mcp unindex petstore-v2
 
 ## Tools
 
-All answers come from the store. There is no fetch tool and no refresh tool —
-indexing is a CLI command. The discovery tools (`list_specs`, `list_endpoints`,
+All answers come from the store. `index_spec` is the explicit write path — the
+tool equivalent of `swagger-mcp index` — and the only tool that reads a source or
+uses the network; there is no fetch-at-query tool and no implicit refresh. The
+discovery tools (`list_specs`, `list_endpoints`,
 `list_schemas`, `analyze_tags`, `search_spec`) are pure SQL over the catalog and
 never load a document; the detail tools load the one stored document they need.
 
 | Tool | What it answers | Parameters |
 |------|-----------------|------------|
+| `index_spec` | Index a file or URL with the same read, size cap, validation and refusals as `swagger-mcp index`. Answers with name, title, version, counts and store path. Writes the store. | `source`*, `name`, `refresh` |
 | `list_specs` | Every indexed spec with title, version, source, fetch time and counts. Start here when a call says several specs are indexed. | `format` |
 | `list_endpoints` | Endpoints, one line each with method, path, summary and tags. | `spec`, `tag`, `method`, `path_pattern`, `deprecated`, `all_specs`, `limit`, `offset`, `format` |
 | `get_endpoint` | One endpoint in full: params, request body, responses, resolved schemas. Shared schemas are shown once then referenced as `$ref(Name)`. | `spec`, `method`*, `path`*, `resolve_depth`, `format` |
@@ -270,9 +291,10 @@ never load a document; the detail tools load the one stored document they need.
   indexed names is returned so the caller can correct itself.
 - **Nothing indexed** — the call fails with `NO_STORE` and names
   `swagger-mcp index`.
-- No tool accepts a `url`. Addressing is by name, never by URL, and a call that
+- No query accepts a `url`. Addressing is by name, never by URL, and a call that
   still sends one fails with `INVALID_QUERY` explaining that specs are indexed
-  with `swagger-mcp index` and queried with `spec=<name>`.
+  with `swagger-mcp index` and queried with `spec=<name>`. `index_spec` is the
+  one exception to the naming: it takes the source itself as `source`.
 
 ### Sweeping every spec
 
@@ -318,10 +340,12 @@ expensive call shape; prefer `spec=<name>` unless you really want the whole stor
 Keys and the `stale_after_days` value are exact; the values are an illustration.
 
 A stored copy older than **7 days** is reported as `stale: true`. Nothing is
-refreshed automatically: `spec_status` is read-only, no tool fetches anything, and
-the `refresh` field carries the exact command a human runs — including
+refreshed automatically: `spec_status` is read-only, no query fetches anything,
+and the `refresh` field carries the exact command a human runs — including
 `--name <stored name>` when the name was chosen rather than derived, so the
-command refreshes that spec instead of renaming it. Reindexing is always explicit.
+command refreshes that spec instead of renaming it. Reindexing is always
+explicit; an agent without a shell uses
+`index_spec(source=<source>, refresh=true)` instead of the CLI command.
 
 ## Errors you may hit
 
@@ -335,6 +359,7 @@ Failures come back as tool errors prefixed with a stable code.
 | `SPEC_NOT_FOUND` | The requested name is not indexed. The message lists the indexed names. | Retry with one of the listed names, or index the spec you meant. |
 | `DIFF_NEEDS_SPECS` | Fewer than two specs are indexed, so there is nothing to compare. | `swagger-mcp index` the second spec (or the older version), then diff by name. |
 | `STORE_ERROR` | The store exists but cannot be opened or read — permissions, a corrupt or truncated file, a store written by a newer schema version, or a v1 store a query refuses to migrate. A file that is not a usable database is reported with the store path, the driver's reason and the action: move or delete the `swa-mcp/` directory and reindex. | Fix access to `swa-mcp/`, upgrade `swagger-mcp` if the store reports a newer schema version, or run `swagger-mcp index <url\|file>` once to upgrade a v1 store. For a corrupt or truncated file, do what the message says: move or delete `swa-mcp/` and reindex with `swagger-mcp index <url\|file>`. A query never rewrites or deletes the file, so it stays broken until you act. |
+| `INDEX_FAILED` | `index_spec` refused a source: it cannot be read, it is over the size cap, it is not a valid OpenAPI document, or its name already belongs to a different source. The message names the source, the cap, the owner or the violation. Nothing was written. | Fix the source; pass `name=<another name>` for a collision; index a smaller document for the cap. `swagger-mcp index` reports the same refusal with the same message. |
 
 ## Migration from v0.7.0
 
@@ -415,7 +440,7 @@ carry truncation metadata:
 | `SWA_MCP_DIR` | (empty) | Explicit store directory, overriding walk-up discovery. |
 | `SWAGGER_MCP_DEFAULT_FORMAT` | `toon` | Default output format (`toon` or `json`). |
 | `SWAGGER_MCP_DEFAULT_LIMIT` | `50` | Default `limit` for list/search tools (`0` = unlimited). |
-| `SWAGGER_MCP_FETCH_TIMEOUT` | `120s` | Timeout for a URL read during `swagger-mcp index` (Go duration, must be > 0). |
+| `SWAGGER_MCP_FETCH_TIMEOUT` | `120s` | Timeout for a URL read during `swagger-mcp index` or `index_spec` (Go duration, must be > 0). |
 
 ## LLM context guide
 
@@ -425,10 +450,10 @@ the model uses the tools efficiently:
 ```markdown
 ## API exploration (swagger-mcp)
 
-Answers come from a local index. If a call reports no store or several specs,
-run `swagger-mcp index <url|file>...` yourself when you have a shell (you are in
-that project, so the store lands where the tools look); only ask the human when
-you cannot run commands.
+Answers come from a local index. If a call reports no store, index the spec: run
+`swagger-mcp index <url|file>...` when you have a shell, or call
+`index_spec(source=<path-or-url>)` when you do not (you are in that project, so
+the store lands where the tools look). Only ask the human when neither works.
 
 ### Workflow
 1. `list_specs` — what is indexed, its source and how old it is
@@ -466,6 +491,7 @@ cmd/swagger-mcp/unindex.go   Remove one indexed spec and its catalog rows
 internal/
 ├── config/config.go         Defaults and env overrides
 ├── store/                   SQLite index: layout/discovery, schema, records
+├── specsource/              The indexer's read path: file or URL, size cap, parse+validate
 ├── tools/                   MCP tool definitions, handlers, spec addressing
 ├── loader/                  kin-openapi parsing, normalization, validation
 ├── analyzer/                List, search, tag analysis, spec diffing
@@ -487,10 +513,12 @@ internal/
   also why a corrupt document cannot break discovery. The catalog is derived with
   the analyzer's own functions, so the SQL answer and the document answer are the
   same answer, not two implementations of it.
-- **Writes are explicit, reads never touch the network.** Only
-  `swagger-mcp index` and `swagger-mcp unindex` write, and only `index` may read
-  a URL. Dropping URL addressing from the query path removes the whole class of
-  query-time fetch problems.
+- **Writes are explicit, reads never touch the network.** Two entry points write
+  — `swagger-mcp index` and the `index_spec` tool — plus `swagger-mcp unindex`
+  for removal. Both indexes read through `internal/specsource`, so the CLI and
+  the tool cannot disagree about the size cap, the resolved source or the
+  validation rules; every query is a store read. Dropping URL addressing from
+  the query path removes the whole class of query-time fetch problems.
 - **Token-first defaults.** TOON, auto-limits and per-endpoint `$ref` dedup keep
   real-world explorations small.
 - **Description-forward schemas.** Field descriptions are inlined while noisy

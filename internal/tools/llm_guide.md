@@ -2,36 +2,51 @@
 
 ## What this is
 
-A **local index** for OpenAPI/Swagger specs plus a query layer over it. It is not
-a fetching server: no tool downloads, refreshes or fetches a spec, and nothing
-here needs an account, a key or a hosted service. Every answer comes from the
-project's own SQLite store (`./swa-mcp/swa-mcp.db`), which the CLI writes. All the
-tools below are read-only against that store, so a repeated call is a query, not
-a network round trip.
+A **local index** for OpenAPI/Swagger specs plus a query layer over it. Every
+answer comes from the project's own SQLite store (`./swa-mcp/swa-mcp.db`).
+Queries never download anything: `index_spec` is the one tool that reads a source
+(a local file or a URL) and the only one that writes, and everything else is
+read-only against that store, so a repeated call is a query, not a network round
+trip. Nothing here needs an account, a key or a hosted service.
 
-## Step 0 — index first (the only step that needs a terminal)
+## Step 0 — index first (two equivalent ways)
 
-Nothing can be answered before a spec is in the store. **If you can run shell
-commands, run it yourself** — the store lands in the project's `swa-mcp/`
+Nothing can be answered before a spec is in the store. Indexing is one explicit
+write, and there are two equivalent ways to perform it.
+
+**With a shell** — run it yourself; the store lands in the project's `swa-mcp/`
 directory, which is exactly where the tools look for it:
 
 ```
-swagger-mcp index <url|file>...          # read a spec once and write it to the store
+swagger-mcp index <source>...            # read a spec once and write it to the store
 swagger-mcp index --refresh <src>        # re-read a source and rewrite the stored copy
 swagger-mcp index --name billing <src>   # store it under a name you choose
 swagger-mcp unindex <name>               # remove one indexed spec and its catalog rows
 ```
 
-Ask the user to run it only when you have no shell access. Never ask the user to
-run a command you could run yourself: indexing is the one and only step that
-takes a terminal, and everything after it is a tool call. Do not ask for a URL —
-no tool accepts one; a spec is addressed by the name the indexer stored.
+**Without a shell** — call `index_spec`, which does exactly what
+`swagger-mcp index` does: same size cap, same validation rules, same store, same
+refusals.
+
+```
+index_spec(source="./openapi.yaml")                    → index a file
+index_spec(source="https://api.example.com/api.json")  → index a URL
+index_spec(source="./openapi.yaml", name="billing-v2") → choose the store name
+index_spec(source="./openapi.yaml", refresh=true)      → rewrite the stored copy
+```
+
+Never ask the user to run a command you could run yourself or do through
+`index_spec`. Indexing is the one step that reads a source; everything after it
+is a store query. Do not pass a URL to a query tool: a spec is addressed by the
+name the indexer stored, never by where it came from.
 
 `index` accepts several sources in one call and is idempotent: an unchanged
-document is reported and not rewritten unless you pass `--refresh`. `unindex`
-removes exactly one spec (its document and its catalog rows) and reports the
-name, title and counts it removed; an unknown name errors with the list of
-indexed names and changes nothing.
+document is reported and not rewritten unless you pass `--refresh` (or
+`refresh=true`). Two different sources that derive the same name are refused and
+the error names the source that owns it; pass `name=` (or `--name`) to keep both.
+`unindex` removes exactly one spec (its document and its catalog rows) and
+reports the name, title and counts it removed; an unknown name errors with the
+list of indexed names and changes nothing. It is a CLI-only command.
 
 ## Orientation — `list_specs` first
 
@@ -95,9 +110,9 @@ Alternatives along the way:
 
 The store is a snapshot, and `spec_status()` is how you see how old it is: it
 reports `fetched_at`, the source `etag`, the age and `stale: true/false`. It is
-read-only. Refreshing is always an explicit `swagger-mcp index --refresh <src>`
-that a human (or you, with a shell) runs — no query triggers a fetch, and a stale
-spec keeps answering from what it has.
+read-only. Refreshing is always explicit — `swagger-mcp index --refresh <src>`
+with a shell, or `index_spec(source=<src>, refresh=true)` without one. No query
+triggers a read, and a stale spec keeps answering from what it has.
 
 ## Reading the output (TOON)
 
@@ -134,6 +149,7 @@ marks the ones a call must carry.
 
 | Tool | Parameters | Use it for |
 |------|------------|------------|
+| `index_spec` | `source` (required), `name`, `refresh` | The explicit write path: index a file or URL with the same read, size cap, validation and refusals as `swagger-mcp index`, then report the name, title, version, counts and store path. The only tool that reads a source. |
 | `list_specs` | `format` | The orientation call: every indexed spec with title, version, source, fetch time and counts. Answers from metadata only. |
 | `list_endpoints` | `spec`, `tag`, `method`, `path_pattern`, `deprecated`, `all_specs`, `limit`, `offset`, `format` | Endpoints, one line each (`METHOD /path — summary [tags]`), filtered and paged. |
 | `get_endpoint` | `spec`, `method` (required), `path` (required), `resolve_depth`, `format` | One endpoint in full: params, request body, responses, resolved schemas. |
@@ -161,8 +177,15 @@ commands you need; the action column is what to do next.
 | `DIFF_NEEDS_SPECS` | `diff_endpoints` was called with fewer than two specs indexed. | Index the second version under its own name (`swagger-mcp index --name billing-v2 <src>`), then diff `spec_old`/`spec_new`. |
 | `INVALID_QUERY` | An argument was rejected: a call that still sends the removed url argument, or `search_spec` without `query`. | Drop the url argument — specs are indexed with `swagger-mcp index` and addressed with `spec=<name>` — and pass the required arguments. |
 | `STORE_ERROR` | The store exists but cannot be opened or read: a corrupt or truncated file, a permissions problem, a store written by a newer schema version. | Read the message: a file that is not a usable database names the store path and the fix — move or delete the `swa-mcp/` directory and reindex. Never edit the file by hand. |
+| `INDEX_FAILED` | `index_spec` refused a source: it cannot be read, it is over the size cap, it is not a valid OpenAPI document, or its name already belongs to a different source. The message names the source, the cap, the owner, or the validation violation. Nothing was written. | Fix the source; pass `name=<another name>` for a collision; index a smaller document for the cap. If you have a shell, `swagger-mcp index` reports the same refusal. |
 
 ## Example sequences
+
+**"Index ./openapi.yaml without a shell"**
+```
+index_spec(source="./openapi.yaml")   → indexed <name>: <title> <version> (N endpoints, M schemas)
+list_specs()                          → confirm the row and its fetch time
+```
 
 **"What can this API do with employees?"**
 ```
@@ -215,6 +238,9 @@ list_specs()    → name, title, version, source, fetched_at, counts
 - Don't ask for a diff when only one spec is indexed — `diff_endpoints` needs two.
 - Don't raise `resolve_depth` to 10 by reflex — the default of 3 is enough for
   most models, and the dedup keeps shared schemas from repeating anyway.
-- Don't ask the user to run `swagger-mcp index` when you can run it yourself.
+- Don't ask the user to run `swagger-mcp index` — run it yourself with a shell,
+  or call `index_spec` when you have none.
+- Don't call `index_spec` to answer a question: it writes the store. Query tools
+  read it, and a call that changes nothing is better spent on `list_endpoints`.
 - Don't try to repair or delete the store file to fix `STORE_ERROR` — tell the
   user the message, which already names the recovery action.

@@ -43,6 +43,7 @@ var documentedCodes = []string{
 	"DIFF_NEEDS_SPECS",
 	"INVALID_QUERY",
 	"STORE_ERROR",
+	"INDEX_FAILED",
 }
 
 // backticked matches one markdown code span's content.
@@ -240,7 +241,8 @@ func TestGuideMatchesToolInventory(t *testing.T) {
 // the first step, the addressing rules, the exploration path and the token rules.
 func TestGuideTeachesTheWorkflow(t *testing.T) {
 	for _, want := range []string{
-		"swagger-mcp index", // the index command, the only step that needs a terminal
+		"swagger-mcp index", // the index command, the CLI equivalent of index_spec
+		"index_spec",        // indexing without a shell, the write-path tool
 		"all_specs",         // the sweep escape hatch
 		"spec_status",       // staleness
 		"resolve_depth",     // the token dial of the detail tools

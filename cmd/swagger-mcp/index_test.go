@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/hnkatze/swagger-extractor-mcp/internal/specsource"
 	"github.com/hnkatze/swagger-extractor-mcp/internal/store"
 )
 
@@ -403,7 +405,7 @@ func TestIndexRejectsSourceOverSizeLimit(t *testing.T) {
 	}
 
 	st := openStoreFromDir(t, dir)
-	ix := &specIndexer{store: st, maxSize: 512, out: io.Discard}
+	ix := &specIndexer{store: st, reader: specsource.NewReader(512, time.Second), out: io.Discard}
 	err := ix.index(context.Background(), source, "", false)
 	if err == nil {
 		t.Fatal("a source larger than the read cap was indexed")

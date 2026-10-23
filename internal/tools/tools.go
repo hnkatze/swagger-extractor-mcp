@@ -33,7 +33,8 @@ import (
 var llmGuide string
 
 // Registry holds the shared dependencies for all tool handlers. Queries answer
-// from specs (the local index); nothing here can fetch a document (S4).
+// from specs (the local index); only the index_spec handler reads a source or
+// touches the network (S13).
 type Registry struct {
 	specs *specSource
 	cfg   config.Config
@@ -66,12 +67,14 @@ type toolDef struct {
 	handler server.ToolHandlerFunc
 }
 
-// definitions is the complete tool surface, in registration order. Indexing is
-// the CLI's job, so there is no fetch and no refresh tool (S3, S4). Every handler
-// is wrapped so a request that still carries the removed `url` argument is told
-// what replaced it instead of being answered about a different spec.
+// definitions is the complete tool surface, in registration order. index_spec is
+// the explicit write path and the only tool that reads a source (S13); every
+// other tool is a read-only query over the store. Every handler is wrapped so a
+// request that still carries the removed `url` argument is told what replaced it
+// instead of being answered about a different spec.
 func (r *Registry) definitions() []toolDef {
 	defs := []toolDef{
+		{indexSpecTool(), r.handleIndexSpec},
 		{listSpecsTool(), r.handleListSpecs},
 		{listEndpointsTool(), r.handleListEndpoints},
 		{getEndpointTool(), r.handleGetEndpoint},
@@ -114,7 +117,7 @@ func (r *Registry) Register(s *server.MCPServer) {
 
 // --- Tool Definitions ---
 
-const specArgDescription = "Indexed spec name written by `swagger-mcp index` (omit when the project has exactly one spec)"
+const specArgDescription = "Indexed spec name written by `swagger-mcp index` or `index_spec` (omit when the project has exactly one spec)"
 
 const allSpecsArgDescription = "true = sweep every indexed spec and prefix each line with its spec name (default false: one spec)"
 
