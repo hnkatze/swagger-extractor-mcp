@@ -44,6 +44,13 @@ instead of an HTTP fetch. With no store present, a tool returns a clear error
 naming `swa-mcp index`. `url` stops being the addressing key; a `spec` argument
 (plus "the only spec" default) replaces it.
 
+**S4a — Addressing is by spec name, never by URL.** A `spec` argument selects one
+indexed spec. Omitted: if the store holds exactly one, that one is used; if it
+holds none, the tool returns an error naming `swagger-mcp index`; if it holds
+several, the tool returns an error listing the names instead of guessing. An
+unknown name returns the same list. No tool accepts `url` on a query path — that
+parameter disappears with the fetch path it belonged to.
+
 **S4b — The store is the contract, the transport is a detail.** Local (stdio) and
 published (HTTP) are the same binary over the same store: local points at
 `./swa-mcp/swa-mcp.db`, published points at a store on a persisted volume. No
@@ -106,6 +113,14 @@ Risk: item 1 (data) on T1 — a new on-disk format and a writer; item 2 (securit
 on T2 — dropping URL addressing removes the SSRF surface entirely, so the check is
 that nothing can still be fetched from a query path.
 
+## Scope confirmation
+
+L4 fixes the product shape: **local stores, zero server**. 2k users means 2k
+project stores, each indexed by its owner. The hosted HTTP mode is not part of
+this product now; the unmerged `feat/railway-deployment` branch stays parked as
+reference and is not merged into this feature. Distribution is the release binary
+plus the index command (S7).
+
 ## Decision taken
 
 L2 settles the earlier open question: the store is how specs are stored and read
@@ -123,6 +138,8 @@ todo eso como un codegraph pero para el swagger"
 **L2** (user, verbatim): "es que siempre el mcp publicado deberia de usar ese
 sqlite para guardar consultar y demas, pero el mcp sera el traductos de eso me
 explico ? ya sea el local o el publiucado, vaya como hace codegraph o engram"
+
+**L4** (user, verbatim): "esto es lo que busco,"
 
 **L3** (author): reading of L2 — the SQLite store is the single source of truth
 for storing and querying in both modes; the MCP is only the translator in front
