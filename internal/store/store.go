@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"modernc.org/sqlite" // the driver's error codes classify an unreadable store file
 )
 
 // SchemaVersion is the on-disk layout version, stored in PRAGMA user_version.
@@ -27,6 +30,11 @@ var ErrNotFound = errors.New("spec is not indexed")
 // would silently report zero endpoints, so the query fails instead and the tool
 // layer names the command that rebuilds it.
 var ErrCatalogIncomplete = errors.New("the discovery catalog was not built from the stored document")
+
+// ErrUnusable is wrapped by every error that reports a store file SQLite cannot
+// read as a database. The query layer passes those messages through unchanged
+// instead of wrapping them a second time, so the recovery action survives.
+var ErrUnusable = errors.New("the store file cannot be read as a database")
 
 // specsSchema is one row per indexed source: its metadata, the compressed
 // document and the fingerprint of the document the catalog was derived from.
@@ -160,6 +168,11 @@ func Open(dir string) (*Store, error) {
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
+			if isUnreadable(err) {
+				// The file is not a database: the pragma that touched it first is
+				// irrelevant, the recovery action is not (S11).
+				return nil, unusableStoreError(path, err)
+			}
 			return nil, fmt.Errorf("prepare store %s (%s): %w", path, pragma, err)
 		}
 	}
@@ -380,6 +393,46 @@ func (s *Store) Put(rec Record) error {
 	return nil
 }
 
+// Delete removes one indexed spec — its document row and every catalog row
+// derived from it — in a single transaction, and returns the metadata of what it
+// removed so the caller can report it (S10). An unknown name changes nothing and
+// reports ErrNotFound; it never falls back to another spec.
+func (s *Store) Delete(name string) (SpecMeta, error) {
+	// The metadata is read first so an unknown name fails before anything is
+	// deleted, and so the report can name the title and the counts.
+	meta, err := s.Meta(name)
+	if err != nil {
+		return SpecMeta{}, err
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return SpecMeta{}, fmt.Errorf("delete spec %q: %w", name, err)
+	}
+	defer tx.Rollback()
+
+	var id int64
+	if err := tx.QueryRow("SELECT id FROM specs WHERE name = ?", name).Scan(&id); err != nil {
+		return SpecMeta{}, fmt.Errorf("delete spec %q: %w", name, err)
+	}
+	// Explicit rather than relying on ON DELETE CASCADE: the orphan check in the
+	// tests reads the tables, and a delete that silently skipped one of them
+	// would leave rows no query could ever reach.
+	for _, table := range catalogTables {
+		if _, err := tx.Exec("DELETE FROM "+table+" WHERE spec_id = ?", id); err != nil {
+			return SpecMeta{}, fmt.Errorf("delete spec %q: clear %s: %w", name, table, err)
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM specs WHERE id = ?", id); err != nil {
+		return SpecMeta{}, fmt.Errorf("delete spec %q: %w", name, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return SpecMeta{}, fmt.Errorf("delete spec %q: %w", name, err)
+	}
+	return meta, nil
+}
+
 // writeCatalog replaces the catalog rows of one spec. It is shared by Put and by
 // the v1 migration so an upgraded store and a freshly indexed one are built from
 // the same derivation, never from two subtly different ones.
@@ -564,6 +617,9 @@ func OpenReadOnly(dir string) (*Store, error) {
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
+			if isUnreadable(err) {
+				return nil, unusableStoreError(path, err)
+			}
 			return nil, fmt.Errorf("prepare read-only store %s (%s): %w", path, pragma, err)
 		}
 	}
@@ -601,6 +657,9 @@ func readOnlyDSN(path string) string {
 func (s *Store) schemaVersion() (int, error) {
 	var version int
 	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		if isUnreadable(err) {
+			return 0, unusableStoreError(s.path, err)
+		}
 		return 0, fmt.Errorf("read schema version of %s: %w", s.path, err)
 	}
 	return version, nil
@@ -620,4 +679,41 @@ func setUserVersion(tx *sql.Tx, version int) error {
 func newerSchemaError(path string, version int) error {
 	return fmt.Errorf("store %s uses schema version %d, but this build supports %d: upgrade swagger-mcp",
 		path, version, SchemaVersion)
+}
+
+// SQLite result codes for a file that is not a readable database.
+const (
+	sqliteCorrupt = 11 // SQLITE_CORRUPT: a database whose pages cannot be read
+	sqliteNotADB  = 26 // SQLITE_NOTADB: not a database at all
+)
+
+// recoveryHint is the one action that fixes a store SQLite cannot read, spelled
+// out so a caller can copy it. No command repairs a broken store file: the
+// indexer only ever writes a spec into a store it can already open.
+var recoveryHint = "move or delete the " + DirName + "/ directory and reindex with `swagger-mcp index <url|file>`"
+
+// unusableStoreError reports a store file that cannot be read as a database: the
+// path, the driver's own reason and the action that rebuilds it (S11). It wraps
+// ErrUnusable so the tool layer can pass the message through unchanged.
+func unusableStoreError(path string, cause error) error {
+	return fmt.Errorf("%w: %s (%v): %s", ErrUnusable, path, cause, recoveryHint)
+}
+
+// isUnreadable reports whether err says the file itself cannot be read as a
+// database. The SQLite code is the real test; the message check keeps the
+// classification working when a wrapped driver error reaches us as text only.
+func isUnreadable(err error) bool {
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		if code := sqliteErr.Code(); code == sqliteCorrupt || code == sqliteNotADB {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{"not a database", "malformed", "corrupt"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }

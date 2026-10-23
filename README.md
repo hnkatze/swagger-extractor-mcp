@@ -73,8 +73,8 @@ Sources can be URLs or local files, and you can pass several at once:
 swagger-mcp index ./openapi.yaml https://api.example.com/openapi.json
 ```
 
-The command creates `./swa-mcp/swa-mcp.db` if it does not exist. Nothing else
-writes to that file.
+The command creates `./swa-mcp/swa-mcp.db` if it does not exist. Only `index`
+and `unindex` write to that file; `swagger-mcp help` lists the subcommands.
 
 ### 3. Register the MCP server
 
@@ -215,6 +215,25 @@ Indexing validates first: a spec that fails validation is rejected and nothing i
 written. It is validated with the same relaxed rules the query layer uses, so a
 spec you can index is a spec you can query.
 
+### Removing an indexed spec
+
+A moved or renamed source leaves a row nobody can use. `unindex` deletes exactly
+one spec — its document and every catalog row derived from it — in one
+transaction:
+
+```bash
+swagger-mcp unindex petstore-v2
+# removed petstore-v2: Petstore 1.0.0 (43 endpoints, 17 schemas)
+# store: /home/you/proyectos/my-app/swa-mcp/swa-mcp.db
+```
+
+- The report names what went away: name, title, version, endpoint and schema
+  counts.
+- An unknown name is an error that lists the indexed names, exits non-zero, and
+  changes nothing. So does a project with no store: `unindex` never creates one.
+- Removing the last spec does not delete the store: the tools keep opening it and
+  report `NO_STORE` (`nothing is indexed`) with the index command to run.
+
 ## Tools
 
 All answers come from the store. There is no fetch tool and no refresh tool —
@@ -315,7 +334,7 @@ Failures come back as tool errors prefixed with a stable code.
 | `SPEC_AMBIGUOUS` | Several specs are indexed and no `spec` was passed. The message lists them. | Pass `spec=<name>` (names come from `list_specs`), or `all_specs=true` to sweep. |
 | `SPEC_NOT_FOUND` | The requested name is not indexed. The message lists the indexed names. | Retry with one of the listed names, or index the spec you meant. |
 | `DIFF_NEEDS_SPECS` | Fewer than two specs are indexed, so there is nothing to compare. | `swagger-mcp index` the second spec (or the older version), then diff by name. |
-| `STORE_ERROR` | The store exists but cannot be opened or read — permissions, a corrupt file, a store written by a newer schema version, or a v1 store a query refuses to migrate. The message names the command that fixes it. | Fix access to `swa-mcp/`, upgrade `swagger-mcp` if the store reports a newer schema version, or run `swagger-mcp index <url\|file>` once to upgrade a v1 store. Removing `swa-mcp/` and reindexing rebuilds the store. |
+| `STORE_ERROR` | The store exists but cannot be opened or read — permissions, a corrupt or truncated file, a store written by a newer schema version, or a v1 store a query refuses to migrate. A file that is not a usable database is reported with the store path, the driver's reason and the action: move or delete the `swa-mcp/` directory and reindex. | Fix access to `swa-mcp/`, upgrade `swagger-mcp` if the store reports a newer schema version, or run `swagger-mcp index <url\|file>` once to upgrade a v1 store. For a corrupt or truncated file, do what the message says: move or delete `swa-mcp/` and reindex with `swagger-mcp index <url\|file>`. A query never rewrites or deletes the file, so it stays broken until you act. |
 
 ## Migration from v0.7.0
 
@@ -407,7 +426,9 @@ the model uses the tools efficiently:
 ## API exploration (swagger-mcp)
 
 Answers come from a local index. If a call reports no store or several specs,
-ask the human to run `swagger-mcp index` instead of guessing.
+run `swagger-mcp index <url|file>...` yourself when you have a shell (you are in
+that project, so the store lands where the tools look); only ask the human when
+you cannot run commands.
 
 ### Workflow
 1. `list_specs` — what is indexed, its source and how old it is
@@ -439,8 +460,9 @@ this guidance on demand, so a model with no setup context can self-orient.
 ## Architecture
 
 ```
-cmd/swagger-mcp/main.go      Entry point — `index` subcommand, else MCP over stdio
+cmd/swagger-mcp/main.go      Entry point — subcommands (index, unindex, help), else MCP over stdio
 cmd/swagger-mcp/index.go     The indexer: read, validate, write the store
+cmd/swagger-mcp/unindex.go   Remove one indexed spec and its catalog rows
 internal/
 ├── config/config.go         Defaults and env overrides
 ├── store/                   SQLite index: layout/discovery, schema, records
@@ -466,8 +488,9 @@ internal/
   the analyzer's own functions, so the SQL answer and the document answer are the
   same answer, not two implementations of it.
 - **Writes are explicit, reads never touch the network.** Only
-  `swagger-mcp index` writes and only it may read a URL. Dropping URL addressing
-  from the query path removes the whole class of query-time fetch problems.
+  `swagger-mcp index` and `swagger-mcp unindex` write, and only `index` may read
+  a URL. Dropping URL addressing from the query path removes the whole class of
+  query-time fetch problems.
 - **Token-first defaults.** TOON, auto-limits and per-endpoint `$ref` dedup keep
   real-world explorations small.
 - **Description-forward schemas.** Field descriptions are inlined while noisy

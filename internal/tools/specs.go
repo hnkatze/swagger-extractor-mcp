@@ -103,6 +103,11 @@ func (s *specSource) openLocked() (*store.Store, error) {
 	}
 	st, err := store.OpenReadOnly(filepath.Dir(s.path))
 	if err != nil {
+		// A store file SQLite cannot read already carries the recovery action and
+		// the path; wrapping it again would bury both (S11).
+		if errors.Is(err, store.ErrUnusable) {
+			return nil, specErr(codeStoreError, "%v", err)
+		}
 		return nil, specErr(codeStoreError, "cannot open the spec store at %s: %v", s.path, err)
 	}
 	s.st = st
