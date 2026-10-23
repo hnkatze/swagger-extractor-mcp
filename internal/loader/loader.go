@@ -151,6 +151,8 @@ func (l *Loader) conditionalFetch(ctx context.Context, normalized string, diskDa
 		req.Header.Set("If-Modified-Since", meta.LastModified)
 	}
 
+	defer startHeartbeat(ctx)()
+
 	resp, err := l.client.Do(req)
 	if err != nil {
 		// Network error — fallback to stale disk data
@@ -254,6 +256,8 @@ func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*ope
 	req.Header.Set("Accept", "application/json, application/yaml, application/x-yaml, text/yaml")
 
 	// Fetch
+	defer startHeartbeat(ctx)()
+
 	resp, err := l.client.Do(req)
 	if err != nil {
 		return nil, nil, &types.ToolError{
