@@ -150,7 +150,7 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | T7 | S9 | done | `87e2eff refactor(store): answer discovery from the catalog` |
 | T8 | S10,S11 | done | `5ec151f feat(store): unindex command and a recovery hint for an unreadable store` |
 | T9 | S12 | done | `a78b265 docs(guide): teach the real workflow and guard it against drift` |
-| T10 | S13 | in progress | `feat(tools): index_spec, the explicit write path` |
+| T10 | S13 | done | `3815d01 feat(tools): index_spec, the explicit write path for agents` |
 
 Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
 parity); slice 2 = `da8822b` (store-backed queries); slice 3 = `8b76ed7`
@@ -262,3 +262,17 @@ agent locally with a shell (the guide now says so). Publishing stays parked.
   behavior change worth remembering.
 
 **L17** (user, verbatim): "esto esta disponible tambien index_spec ? si no, dejalo disponible como otra opcion entre mas facilidades para el usuario mejor"
+
+**L18** (evidence, this session):
+- `index_spec` verified end to end with a real HTTP source: `indexed api: Petstore
+  1.0.0 (5 endpoints, 4 schemas)`, then `list_specs` reports the spec with its URL
+  as source. After killing the fixture server, `list_endpoints` still answered
+  `# 5 endpoints` — queries do not depend on the network.
+- `internal/specsource` is shared by the CLI and the tool, so validation, size cap,
+  name derivation and collision refusal cannot drift between them.
+- The no-network guard is now precise and mutation-proven: in package tools only
+  `indexspec.go` may import `internal/specsource`; importing it from `specs.go`
+  fails the suite with "only indexspec.go may read a source", and an
+  import-free tree fails too (the tool must use the shared path).
+- Suite green with CGO off: 11 packages, including the new `internal/specsource`.
+- Tool inventory is now 14: the 13 read tools plus `index_spec`.
