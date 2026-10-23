@@ -89,6 +89,13 @@ func validateDoc(ctx context.Context, doc *openapi3.T) error {
 	return doc.Validate(ctx, openapi3.DisableExamplesValidation(), openapi3.DisableSchemaDefaultsValidation())
 }
 
+// PrepareDocument applies the normalizations the server performs before it
+// serves a document, so an indexer can validate with exactly the rules a query
+// would hit instead of reimplementing (or missing) them.
+func PrepareDocument(doc *openapi3.T) {
+	sanitizeSecuritySchemes(doc)
+}
+
 // ValidateDocument reports the violations doc.Validate finds, using the same
 // relaxed options as validateDoc so it can never disagree with whether a spec
 // loads. Unlike validateDoc it does not normalize anything first, so values the
