@@ -109,6 +109,16 @@ and `all_specs`, staleness, and an error→action table for the codes a caller c
 hit. Every tool in the registry must appear in it, and a test must fail when the
 guide and the tool inventory drift apart.
 
+**S13 — `index_spec` tool: the explicit write path for agents.** A tool
+`index_spec` takes `source` (a file path or a URL), optional `name` and
+`refresh`, and performs exactly what `swagger-mcp index` does: read the source
+with the same size cap, parse and validate with the server's own rules, refuse a
+name owned by another source, write the store, and answer with the same summary
+and the same actionable errors. It is the **only** tool allowed to touch the
+network, and it exists so a client without shell access can index. Queries stay
+network-free and read-only, and the guard test must pin that: only the
+`index_spec` handler file may reference the source-reading package.
+
 **Non-goals**: hosted multi-tenant service; authentication; embeddings/vector
 search; watching the filesystem for spec changes (an explicit reindex is enough
 until someone asks).
@@ -140,6 +150,7 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | T7 | S9 | done | `87e2eff refactor(store): answer discovery from the catalog` |
 | T8 | S10,S11 | done | `5ec151f feat(store): unindex command and a recovery hint for an unreadable store` |
 | T9 | S12 | done | `a78b265 docs(guide): teach the real workflow and guard it against drift` |
+| T10 | S13 | in progress | `feat(tools): index_spec, the explicit write path` |
 
 Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
 parity); slice 2 = `da8822b` (store-backed queries); slice 3 = `8b76ed7`
@@ -249,3 +260,5 @@ agent locally with a shell (the guide now says so). Publishing stays parked.
 - Suite green (10 packages, CGO off). Contract note: `swagger-mcp -h` now prints
   help instead of starting the stdio server, which nobody scripted but is a
   behavior change worth remembering.
+
+**L17** (user, verbatim): "esto esta disponible tambien index_spec ? si no, dejalo disponible como otra opcion entre mas facilidades para el usuario mejor"
