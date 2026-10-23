@@ -256,9 +256,10 @@ func (l *Loader) storeInDisk(normalized string, body []byte, summary types.SpecS
 	l.diskCache.Set(normalized, body, meta)
 }
 
-// fullFetch performs a full HTTP GET, parses, validates, and caches in L1+L2.
-// This is the original LoadFromURL flow for when no cache hit is available.
-func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*openapi3.T, *types.SpecSummary, error) {
+// httpGetSpec validates the URL, performs the GET and reads the size-limited
+// body. The response is returned with its body already closed so callers can
+// still read its headers.
+func (l *Loader) httpGetSpec(ctx context.Context, normalized, rawURL string) ([]byte, *http.Response, error) {
 	// Validate URL
 	parsed, err := url.ParseRequestURI(normalized)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
@@ -281,8 +282,6 @@ func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*ope
 	req.Header.Set("Accept", "application/json, application/yaml, application/x-yaml, text/yaml")
 
 	// Fetch
-	defer startHeartbeat(ctx)()
-
 	resp, err := l.client.Do(req)
 	if err != nil {
 		return nil, nil, &types.ToolError{
@@ -311,6 +310,18 @@ func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*ope
 			Details: err.Error(),
 		}
 	}
+	return data, resp, nil
+}
+
+// fullFetch performs a full HTTP GET, parses, validates, and caches in L1+L2.
+// This is the original LoadFromURL flow for when no cache hit is available.
+func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*openapi3.T, *types.SpecSummary, error) {
+	defer startHeartbeat(ctx)()
+
+	data, resp, err := l.httpGetSpec(ctx, normalized, rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	// Parse
 	doc, err := l.LoadFromData(data)
@@ -336,6 +347,30 @@ func (l *Loader) fullFetch(ctx context.Context, normalized, rawURL string) (*ope
 	l.storeInDisk(normalized, data, summary, resp)
 
 	return doc, &summary, nil
+}
+
+// LoadUnvalidated fetches or reads a spec and parses it WITHOUT running the
+// relaxed validation the normal load path applies, so a caller can report the
+// violations instead of failing on them. It never populates the L1 document
+// cache: caching an unvalidated document would let a later normal load serve
+// something the loader would have rejected.
+func (l *Loader) LoadUnvalidated(ctx context.Context, rawURL string) (*openapi3.T, error) {
+	normalized := normalizeURL(rawURL)
+
+	defer startHeartbeat(ctx)()
+
+	// A stale disk copy is still worth validating, so expiry is ignored.
+	if l.diskCache != nil && l.diskCache.Enabled() {
+		if diskData, _, ok := l.diskCache.Get(normalized); ok {
+			return l.LoadFromData(diskData)
+		}
+	}
+
+	data, _, err := l.httpGetSpec(ctx, normalized, rawURL)
+	if err != nil {
+		return nil, err
+	}
+	return l.LoadFromData(data)
 }
 
 // LoadFromData parses raw bytes into an OpenAPI document.

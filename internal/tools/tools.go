@@ -689,7 +689,7 @@ func (r *Registry) handleValidateSpec(ctx context.Context, req mcp.CallToolReque
 		return toolError(types.ErrInvalidURL, errURLRequired), nil
 	}
 
-	doc, err := r.loadSpec(ctx, req, url)
+	doc, err := r.loader.LoadUnvalidated(r.progressCtx(ctx, req), url)
 	if err != nil {
 		return toolError(types.ErrFetchFailed, err.Error()), nil
 	}

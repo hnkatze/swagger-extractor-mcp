@@ -706,3 +706,25 @@ func TestHandleValidateSpec_RequiresURL(t *testing.T) {
 		t.Fatalf("expected URL-required error, got %q", extractText(res))
 	}
 }
+
+func TestHandleValidateSpec_ReportsSpecTheLoaderRejects(t *testing.T) {
+	const spec = `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/pets/{id}":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(spec))
+	}))
+	t.Cleanup(srv.Close)
+
+	r := New(config.Default())
+	res, err := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{"url": srv.URL}))
+	if err != nil || res.IsError {
+		t.Fatalf("report must be a normal result: %v %q", err, extractText(res))
+	}
+	text := extractText(res)
+	if !strings.Contains(text, "INVALID") || strings.Contains(text, "INVALID_SPEC") {
+		t.Errorf("expected INVALID verdict, got %q", text)
+	}
+	if !strings.Contains(text, "id") {
+		t.Errorf("expected the violation to be listed, got %q", text)
+	}
+}

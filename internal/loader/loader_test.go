@@ -2,6 +2,7 @@ package loader
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1063,5 +1064,59 @@ func TestValidateDocument_DeterministicOrder(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(first) {
 		t.Errorf("violations not sorted: %v", first)
+	}
+}
+
+// openapi 3.0.3 plus a path template parameter with no matching declaration:
+// the normal load path rejects it with ErrInvalidSpec.
+const invalidStrictSpecJSON = `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/pets/{id}":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
+
+func TestLoadUnvalidated_ParsesWhatNormalLoadRejects(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(invalidStrictSpecJSON))
+	}))
+	t.Cleanup(srv.Close)
+
+	l := New(config.Default())
+	_, _, err := l.LoadFromURL(context.Background(), srv.URL)
+	var te *types.ToolError
+	if !errors.As(err, &te) || te.Code != types.ErrInvalidSpec {
+		t.Fatalf("normal load err = %v, want ErrInvalidSpec", err)
+	}
+
+	doc, err := l.LoadUnvalidated(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("LoadUnvalidated: %v", err)
+	}
+	if len(ValidateDocument(doc)) == 0 {
+		t.Error("expected the unvalidated document to carry violations")
+	}
+}
+
+func TestLoadUnvalidated_DoesNotPopulateL1(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(invalidStrictSpecJSON))
+	}))
+	t.Cleanup(srv.Close)
+
+	l := New(config.Default())
+	if _, err := l.LoadUnvalidated(context.Background(), srv.URL); err != nil {
+		t.Fatalf("LoadUnvalidated: %v", err)
+	}
+	if st := l.SpecStatus(srv.URL); st.Cached || st.Source == "memory" {
+		t.Errorf("unvalidated doc leaked into L1: %+v", st)
+	}
+	if _, _, err := l.LoadFromURL(context.Background(), srv.URL); err == nil {
+		t.Error("normal load must still reject after an unvalidated load")
+	}
+}
+
+func TestLoadUnvalidated_InvalidURL(t *testing.T) {
+	l := New(config.Default())
+	_, err := l.LoadUnvalidated(context.Background(), "not a url")
+	var te *types.ToolError
+	if !errors.As(err, &te) || te.Code != types.ErrInvalidURL {
+		t.Fatalf("err = %v, want ErrInvalidURL", err)
 	}
 }
