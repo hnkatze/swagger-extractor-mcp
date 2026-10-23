@@ -147,6 +147,22 @@ my-app/
 - **Created by the indexer, never by hand.** A query that finds no store fails
   with `NO_STORE` instead of creating one, and the query layer opens the database
   read-only: it never creates the file, the schema or a migration.
+- **Discovery is SQL, detail is the document.** `list_specs`, `list_endpoints`,
+  `list_schemas`, `analyze_tags` and `search_spec` answer from the store's
+  catalog tables, so listing or searching a large spec never decompresses or
+  re-parses it. The detail tools (`get_endpoint`, `get_schema`,
+  `generate_types`, `diff_endpoints`, `security_schemes`, `validate_spec`) load
+  that one stored document, which is what they are for.
+- **A broken document degrades the detail tools only.** The catalog is written at
+  index time, so a stored document that cannot be gzip-decoded or parsed still
+  lists, searches and analyzes correctly; only the tools that need the document
+  fail, with an error naming the refresh command.
+- **The store is versioned, and only the indexer migrates it.** `PRAGMA
+  user_version` is `2`. Opening an older store for a write (any `swagger-mcp
+  index` run) upgrades it in place: the catalog is re-derived from the documents
+  it already holds, so no manual reindex is needed and nothing is lost. A query
+  never migrates — a v1 store reports `STORE_ERROR` naming the `swagger-mcp
+  index` command to run.
 - **Discovery walks up.** Starting from the working directory, the server and the
   indexer use the nearest `swa-mcp/` directory it finds above it, falling back to
   `<cwd>/swa-mcp`.
@@ -202,7 +218,9 @@ spec you can index is a spec you can query.
 ## Tools
 
 All answers come from the store. There is no fetch tool and no refresh tool —
-indexing is a CLI command.
+indexing is a CLI command. The discovery tools (`list_specs`, `list_endpoints`,
+`list_schemas`, `analyze_tags`, `search_spec`) are pure SQL over the catalog and
+never load a document; the detail tools load the one stored document they need.
 
 | Tool | What it answers | Parameters |
 |------|-----------------|------------|
@@ -297,7 +315,7 @@ Failures come back as tool errors prefixed with a stable code.
 | `SPEC_AMBIGUOUS` | Several specs are indexed and no `spec` was passed. The message lists them. | Pass `spec=<name>` (names come from `list_specs`), or `all_specs=true` to sweep. |
 | `SPEC_NOT_FOUND` | The requested name is not indexed. The message lists the indexed names. | Retry with one of the listed names, or index the spec you meant. |
 | `DIFF_NEEDS_SPECS` | Fewer than two specs are indexed, so there is nothing to compare. | `swagger-mcp index` the second spec (or the older version), then diff by name. |
-| `STORE_ERROR` | The store exists but cannot be opened or read — permissions, a corrupt file, or a store written by a newer schema version. | Fix access to `swa-mcp/`, or upgrade `swagger-mcp` if the store reports a newer schema version. Removing `swa-mcp/` and reindexing rebuilds the store. |
+| `STORE_ERROR` | The store exists but cannot be opened or read — permissions, a corrupt file, a store written by a newer schema version, or a v1 store a query refuses to migrate. The message names the command that fixes it. | Fix access to `swa-mcp/`, upgrade `swagger-mcp` if the store reports a newer schema version, or run `swagger-mcp index <url\|file>` once to upgrade a v1 store. Removing `swa-mcp/` and reindexing rebuilds the store. |
 
 ## Migration from v0.7.0
 
@@ -438,9 +456,15 @@ internal/
 ### Design decisions
 
 - **The store is the product's data model.** One SQLite file per project holds the
-  raw documents plus a normalized catalog (specs, endpoints, schemas, tags) for
-  discovery. Detail queries load that one stored document and reuse the existing
-  extractor instead of reimplementing `$ref` resolution in SQL.
+  raw documents plus a normalized catalog for discovery: `specs`, `endpoints`,
+  `endpoint_tags`, `endpoint_fields` (the parameter, request-body and
+  response-body names `search_spec` matches), `schemas`, `tags` and
+  `tag_methods`. Discovery is a query over those tables and never reads a
+  document; the detail queries load that one stored document and reuse the
+  existing extractor instead of reimplementing `$ref` resolution in SQL. This is
+  also why a corrupt document cannot break discovery. The catalog is derived with
+  the analyzer's own functions, so the SQL answer and the document answer are the
+  same answer, not two implementations of it.
 - **Writes are explicit, reads never touch the network.** Only
   `swagger-mcp index` writes and only it may read a URL. Dropping URL addressing
   from the query path removes the whole class of query-time fetch problems.

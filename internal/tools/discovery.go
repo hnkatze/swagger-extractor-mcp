@@ -8,7 +8,6 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/hnkatze/swagger-mcp-go/internal/analyzer"
 	"github.com/hnkatze/swagger-mcp-go/internal/formatter"
 	"github.com/hnkatze/swagger-mcp-go/internal/store"
 	"github.com/hnkatze/swagger-mcp-go/internal/types"
@@ -18,6 +17,69 @@ import (
 // (S6). A week is a product choice, not a technical one: refreshing stays an
 // explicit act, so the only job of this threshold is to make silence visible.
 const staleAfter = 7 * 24 * time.Hour
+
+// --- catalog rows to the shapes the formatters render (S9) ---
+
+// endpointSummary projects one catalog row onto the summary a listing prints.
+func endpointSummary(ep store.Endpoint) types.EndpointSummary {
+	return types.EndpointSummary{
+		Method:      ep.Method,
+		Path:        ep.Path,
+		Summary:     ep.Summary,
+		Description: ep.Description,
+		Tags:        ep.Tags,
+		Deprecated:  ep.Deprecated,
+	}
+}
+
+// endpointSummaries projects a catalog page. No rows means no matches, which the
+// listings report as a nil slice (never an empty one).
+func endpointSummaries(rows []store.Endpoint) []types.EndpointSummary {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]types.EndpointSummary, 0, len(rows))
+	for _, ep := range rows {
+		out = append(out, endpointSummary(ep))
+	}
+	return out
+}
+
+// schemaInfos projects a catalog page. A nil page means the spec has no component
+// schemas at all; an empty page means the filter excluded them.
+func schemaInfos(rows []store.Schema) []types.SchemaInfo {
+	if rows == nil {
+		return nil
+	}
+	out := make([]types.SchemaInfo, 0, len(rows))
+	for _, schema := range rows {
+		out = append(out, types.SchemaInfo{
+			Name:        schema.Name,
+			FieldCount:  schema.FieldCount,
+			UsedBy:      schema.UsedBy,
+			Description: schema.Description,
+		})
+	}
+	return out
+}
+
+// tagSummaries projects the catalog's tag analysis.
+func tagSummaries(tags []store.Tag) []types.TagSummary {
+	out := make([]types.TagSummary, 0, len(tags))
+	for _, tag := range tags {
+		breakdown := make(map[string]int, len(tag.MethodBreakdown))
+		for method, count := range tag.MethodBreakdown {
+			breakdown[method] = count
+		}
+		out = append(out, types.TagSummary{
+			Name:            tag.Name,
+			Description:     tag.Description,
+			EndpointCount:   tag.EndpointCount,
+			MethodBreakdown: breakdown,
+		})
+	}
+	return out
+}
 
 // --- list_specs (S5) ---
 
@@ -135,6 +197,17 @@ func (r *Registry) sweepTargets() ([]store.SpecMeta, *mcp.CallToolResult) {
 	return metas, nil
 }
 
+// endpointFilter reads the endpoint filters of a request once, so list_endpoints
+// and its sweep cannot drift apart.
+func endpointFilter(req mcp.CallToolRequest) store.EndpointFilter {
+	return store.EndpointFilter{
+		Tag:         getStringArg(req, "tag"),
+		Method:      getStringArg(req, "method"),
+		PathPattern: getStringArg(req, "path_pattern"),
+		Deprecated:  getOptionalBoolArg(req, "deprecated"),
+	}
+}
+
 // sweptEndpoint is one endpoint line of a cross-spec result: the summary fields
 // the single-spec answer reports, plus the spec it came from.
 type sweptEndpoint struct {
@@ -194,21 +267,16 @@ func (r *Registry) handleListEndpointsAllSpecs(req mcp.CallToolRequest) (*mcp.Ca
 		return errResult, nil
 	}
 
-	filter := analyzer.ListFilter{
-		Tag:         getStringArg(req, "tag"),
-		Method:      getStringArg(req, "method"),
-		PathPattern: getStringArg(req, "path_pattern"),
-		Deprecated:  getOptionalBoolArg(req, "deprecated"),
-	}
+	filter := endpointFilter(req)
 
 	var all []sweptEndpoint
 	for _, meta := range metas {
-		doc, err := r.specs.document(meta.Name)
+		rows, _, err := r.specs.endpoints(meta.Name, filter, 0, 0)
 		if err != nil {
 			return specToolError(err), nil
 		}
-		for _, ep := range analyzer.ListEndpoints(doc, filter) {
-			all = append(all, sweptEndpoint{Spec: meta.Name, EndpointSummary: ep})
+		for _, ep := range rows {
+			all = append(all, sweptEndpoint{Spec: meta.Name, EndpointSummary: endpointSummary(ep)})
 		}
 	}
 
@@ -260,12 +328,12 @@ func (r *Registry) handleSearchSpecAllSpecs(req mcp.CallToolRequest) (*mcp.CallT
 
 	var all []sweptEndpoint
 	for _, meta := range metas {
-		doc, err := r.specs.document(meta.Name)
+		rows, _, err := r.specs.search(meta.Name, query, 0, 0)
 		if err != nil {
 			return specToolError(err), nil
 		}
-		for _, ep := range analyzer.SearchSpec(doc, query) {
-			all = append(all, sweptEndpoint{Spec: meta.Name, EndpointSummary: ep})
+		for _, ep := range rows {
+			all = append(all, sweptEndpoint{Spec: meta.Name, EndpointSummary: endpointSummary(ep)})
 		}
 	}
 
@@ -306,11 +374,11 @@ func (r *Registry) handleListSchemasAllSpecs(req mcp.CallToolRequest) (*mcp.Call
 	filter := getStringArg(req, "filter")
 	var all []sweptSchema
 	for _, meta := range metas {
-		doc, err := r.specs.document(meta.Name)
+		rows, _, err := r.specs.schemas(meta.Name, filter, 0, 0)
 		if err != nil {
 			return specToolError(err), nil
 		}
-		for _, schema := range analyzer.ListSchemas(doc, filter) {
+		for _, schema := range schemaInfos(rows) {
 			all = append(all, sweptSchema{Spec: meta.Name, SchemaInfo: schema})
 		}
 	}
@@ -372,11 +440,11 @@ func (r *Registry) handleAnalyzeTagsAllSpecs(req mcp.CallToolRequest) (*mcp.Call
 	}
 	perSpec := make([]specTags, 0, len(metas))
 	for _, meta := range metas {
-		doc, err := r.specs.document(meta.Name)
+		tags, err := r.specs.tags(meta.Name)
 		if err != nil {
 			return specToolError(err), nil
 		}
-		perSpec = append(perSpec, specTags{name: meta.Name, tags: analyzer.AnalyzeTags(doc)})
+		perSpec = append(perSpec, specTags{name: meta.Name, tags: tagSummaries(tags)})
 	}
 
 	if r.getFormat(req) == types.FormatJSON {

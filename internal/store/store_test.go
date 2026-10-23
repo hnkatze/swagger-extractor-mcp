@@ -244,23 +244,23 @@ func TestPutIndexesCatalogRows(t *testing.T) {
 
 	var method, path, tag string
 	if err := st.db.QueryRow(
-		"SELECT method, path, tags FROM endpoints WHERE path = ? AND method = ?", "/pets", "POST",
+		"SELECT method, path, tag FROM endpoint_tags WHERE path = ? AND method = ? ORDER BY pos", "/pets", "POST",
 	).Scan(&method, &path, &tag); err != nil {
-		t.Fatalf("read endpoint row: %v", err)
+		t.Fatalf("read endpoint tags: %v", err)
 	}
 	if tag != "pets" {
 		t.Errorf("endpoint tags = %q, want pets", tag)
 	}
 
 	var fields, usage int
-	if err := st.db.QueryRow("SELECT field_count, usage_count FROM schemas WHERE name = ?", "Pet").Scan(&fields, &usage); err != nil {
+	if err := st.db.QueryRow("SELECT field_count, used_by FROM schemas WHERE name = ?", "Pet").Scan(&fields, &usage); err != nil {
 		t.Fatalf("read schema row: %v", err)
 	}
 	if fields != 5 {
 		t.Errorf("Pet field_count = %d, want 5", fields)
 	}
 	if usage < 1 {
-		t.Errorf("Pet usage_count = %d, want at least 1", usage)
+		t.Errorf("Pet used_by = %d, want at least 1", usage)
 	}
 }
 

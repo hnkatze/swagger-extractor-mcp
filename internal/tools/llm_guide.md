@@ -144,8 +144,9 @@ list_specs()                        → name, title, version, source, fetched_at
 - Don't `get_endpoint` every endpoint to "look around" — narrow with tags/search.
 - Don't expand every `$ref(Name)` — only the ones whose fields you actually need.
 - Don't guess a spec name — `list_specs` and `spec_status` list the indexed names.
-- Don't reach for `all_specs=true` as a default — it parses every stored spec, so
-  use it to locate a thing across projects, then go back to `spec=<name>`.
+- Don't reach for `all_specs=true` as a default — it reads the catalog of every
+  stored spec and returns the most rows, so use it to locate a thing across
+  projects, then go back to `spec=<name>`.
 - Don't ask for a diff when only one spec is indexed — `diff_endpoints` needs two.
 - Don't raise `resolve_depth` to 10 by reflex — the default of 3 is enough for
   most models, and the dedup keeps shared schemas from repeating anyway.

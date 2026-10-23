@@ -415,56 +415,49 @@ func (r *Registry) handleListEndpoints(ctx context.Context, req mcp.CallToolRequ
 	if getBoolArg(req, "all_specs") {
 		return r.handleListEndpointsAllSpecs(req)
 	}
-	doc, errResult := r.document(req)
-	if errResult != nil {
-		return errResult, nil
+	name, err := r.specs.resolve(req, "spec")
+	if err != nil {
+		return specToolError(err), nil
 	}
 
-	tag := getStringArg(req, "tag")
-	method := getStringArg(req, "method")
-	pathPattern := getStringArg(req, "path_pattern")
+	// Answered from the catalog: a listing never decompresses or parses the
+	// stored document (S9).
+	rows, total, err := r.specs.endpoints(name, endpointFilter(req), r.getLimit(req), getOffset(req))
+	if err != nil {
+		return specToolError(err), nil
+	}
+	return r.endpointListResult(req, endpointSummaries(rows), total), nil
+}
 
-	endpoints := analyzer.ListEndpoints(doc, analyzer.ListFilter{
-		Tag:         tag,
-		Method:      method,
-		PathPattern: pathPattern,
-		Deprecated:  getOptionalBoolArg(req, "deprecated"),
-	})
+// endpointListResult renders a paged endpoint listing: the one place that turns a
+// page and its total into TOON or JSON, so list_endpoints and search_spec keep the
+// paging metadata they had when they sliced a parsed document.
+func (r *Registry) endpointListResult(req mcp.CallToolRequest, page []types.EndpointSummary, total int) *mcp.CallToolResult {
+	start, _, truncated := r.pageWindow(req, total)
 
-	// Apply offset/limit with truncation metadata
-	total := len(endpoints)
-	start, end, truncated := r.pageWindow(req, total)
-	endpoints = endpoints[start:end]
-
-	format := r.getFormat(req)
-
-	var output string
-	if format == types.FormatTOON {
-		stripped := formatter.StripDescriptions(endpoints)
-		result := &types.ListResult{
+	if r.getFormat(req) == types.FormatTOON {
+		stripped := formatter.StripDescriptions(page)
+		return mcp.NewToolResultText(formatter.FormatListResultTOON(&types.ListResult{
 			Total:     total,
 			Showing:   len(stripped),
 			Offset:    start,
 			Truncated: truncated,
 			Endpoints: stripped,
-		}
-		output = formatter.FormatListResultTOON(result)
-	} else {
-		result := &types.ListResult{
-			Total:     total,
-			Showing:   len(endpoints),
-			Offset:    start,
-			Truncated: truncated,
-			Endpoints: endpoints,
-		}
-		var fmtErr error
-		output, fmtErr = formatter.FormatListResultJSON(result)
-		if fmtErr != nil {
-			return toolError(types.ErrInternalError, fmtErr.Error()), nil
-		}
+		}))
 	}
 
-	return mcp.NewToolResultText(output), nil
+	result := &types.ListResult{
+		Total:     total,
+		Showing:   len(page),
+		Offset:    start,
+		Truncated: truncated,
+		Endpoints: page,
+	}
+	output, err := formatter.FormatListResultJSON(result)
+	if err != nil {
+		return toolError(types.ErrInternalError, err.Error())
+	}
+	return mcp.NewToolResultText(output)
 }
 
 func (r *Registry) handleGetEndpoint(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -536,9 +529,9 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 	if getBoolArg(req, "all_specs") {
 		return r.handleSearchSpecAllSpecs(req)
 	}
-	doc, errResult := r.document(req)
-	if errResult != nil {
-		return errResult, nil
+	name, err := r.specs.resolve(req, "spec")
+	if err != nil {
+		return specToolError(err), nil
 	}
 
 	query := getStringArg(req, "query")
@@ -546,69 +539,42 @@ func (r *Registry) handleSearchSpec(ctx context.Context, req mcp.CallToolRequest
 		return toolError(types.ErrInvalidQuery, "search query is required"), nil
 	}
 
-	results := analyzer.SearchSpec(doc, query)
-
-	if len(results) == 0 {
+	// The catalog carries the operation ids and body field names the search
+	// matches on, so a search never parses the stored document (S9).
+	rows, total, err := r.specs.search(name, query, r.getLimit(req), getOffset(req))
+	if err != nil {
+		return specToolError(err), nil
+	}
+	if total == 0 {
 		return mcp.NewToolResultText("No endpoints found matching query: " + query), nil
 	}
-
-	// Apply offset/limit with truncation metadata
-	total := len(results)
-	start, end, truncated := r.pageWindow(req, total)
-	results = results[start:end]
-
-	format := r.getFormat(req)
-
-	var output string
-	if format == types.FormatTOON {
-		stripped := formatter.StripDescriptions(results)
-		result := &types.ListResult{
-			Total:     total,
-			Showing:   len(stripped),
-			Offset:    start,
-			Truncated: truncated,
-			Endpoints: stripped,
-		}
-		output = formatter.FormatListResultTOON(result)
-	} else {
-		result := &types.ListResult{
-			Total:     total,
-			Showing:   len(results),
-			Offset:    start,
-			Truncated: truncated,
-			Endpoints: results,
-		}
-		var fmtErr error
-		output, fmtErr = formatter.FormatListResultJSON(result)
-		if fmtErr != nil {
-			return toolError(types.ErrInternalError, fmtErr.Error()), nil
-		}
-	}
-
-	return mcp.NewToolResultText(output), nil
+	return r.endpointListResult(req, endpointSummaries(rows), total), nil
 }
 
 func (r *Registry) handleListSchemas(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if getBoolArg(req, "all_specs") {
 		return r.handleListSchemasAllSpecs(req)
 	}
-	doc, errResult := r.document(req)
-	if errResult != nil {
-		return errResult, nil
+	name, err := r.specs.resolve(req, "spec")
+	if err != nil {
+		return specToolError(err), nil
 	}
 
-	schemas := analyzer.ListSchemas(doc, getStringArg(req, "filter"))
+	// Answered from the catalog: schemas, field counts, usage and descriptions
+	// are rows, not a parse (S9).
+	rows, total, err := r.specs.schemas(name, getStringArg(req, "filter"), r.getLimit(req), getOffset(req))
+	if err != nil {
+		return specToolError(err), nil
+	}
+	start, _, truncated := r.pageWindow(req, total)
 
-	total := len(schemas)
-	start, end, truncated := r.pageWindow(req, total)
-	page := schemas[start:end]
-
+	schemas := schemaInfos(rows)
 	result := &types.SchemaListResult{
 		Total:     total,
-		Showing:   len(page),
+		Showing:   len(schemas),
 		Offset:    start,
 		Truncated: truncated,
-		Schemas:   page,
+		Schemas:   schemas,
 	}
 
 	if r.getFormat(req) == types.FormatTOON {
@@ -681,20 +647,24 @@ func (r *Registry) handleAnalyzeTags(ctx context.Context, req mcp.CallToolReques
 	if getBoolArg(req, "all_specs") {
 		return r.handleAnalyzeTagsAllSpecs(req)
 	}
-	doc, errResult := r.document(req)
-	if errResult != nil {
-		return errResult, nil
+	name, err := r.specs.resolve(req, "spec")
+	if err != nil {
+		return specToolError(err), nil
 	}
 
-	tags := analyzer.AnalyzeTags(doc)
-	format := r.getFormat(req)
+	// Counts, descriptions and method breakdowns are catalog rows (S9).
+	tags, err := r.specs.tags(name)
+	if err != nil {
+		return specToolError(err), nil
+	}
+	summaries := tagSummaries(tags)
 
 	var output string
-	if format == types.FormatTOON {
-		output = formatter.FormatTagsTOON(tags)
+	if r.getFormat(req) == types.FormatTOON {
+		output = formatter.FormatTagsTOON(summaries)
 	} else {
 		var fmtErr error
-		output, fmtErr = formatter.FormatTagsJSON(tags)
+		output, fmtErr = formatter.FormatTagsJSON(summaries)
 		if fmtErr != nil {
 			return toolError(types.ErrInternalError, fmtErr.Error()), nil
 		}

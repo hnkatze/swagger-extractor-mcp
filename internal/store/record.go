@@ -1,38 +1,70 @@
 package store
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
+
+	"github.com/hnkatze/swagger-mcp-go/internal/analyzer"
+	"github.com/hnkatze/swagger-mcp-go/internal/loader"
 )
 
-// Endpoint is one normalized discovery row: an operation of the spec.
+// The categories search_spec matches within, in the priority order the analyzer
+// scores them: operation parameters first, then request-body properties, then
+// response-body properties.
+const (
+	fieldParameter    = "parameter"
+	fieldRequestBody  = "request_body"
+	fieldResponseBody = "response_body"
+)
+
+// Endpoint is one normalized discovery row: an operation of the spec, with the
+// fields list_endpoints displays and the names search_spec matches on. A row read
+// back from the catalog fills only the display fields; the name lists are used
+// when the catalog is written.
 type Endpoint struct {
-	Method     string
-	Path       string
-	Summary    string
-	Tags       []string
-	Deprecated bool
+	Method      string
+	Path        string
+	Summary     string
+	Description string
+	OperationID string
+	Tags        []string
+	Deprecated  bool
+	// ParameterNames, RequestBodyFields and ResponseBodyFields are the names
+	// search_spec matches on, per category.
+	ParameterNames     []string
+	RequestBodyFields  []string
+	ResponseBodyFields []string
+}
+
+// fields returns the searchable names grouped by the category they score in.
+func (e Endpoint) fields() map[string][]string {
+	return map[string][]string{
+		fieldParameter:    e.ParameterNames,
+		fieldRequestBody:  e.RequestBodyFields,
+		fieldResponseBody: e.ResponseBodyFields,
+	}
 }
 
 // Schema is one normalized discovery row: a component schema with the counts
 // discovery needs without parsing the document.
 type Schema struct {
-	Name       string
-	FieldCount int
-	UsageCount int
+	Name        string
+	FieldCount  int
+	UsedBy      int
+	Description string
 }
 
-// Tag is one normalized discovery row: a tag and how many operations use it.
+// Tag is one normalized discovery row: a tag, its declared description and how
+// many operations use it, broken down by method.
 type Tag struct {
-	Name          string
-	EndpointCount int
+	Name            string
+	Description     string
+	EndpointCount   int
+	MethodBreakdown map[string]int
 }
 
 // Record is everything written for one spec: the source metadata, the document
@@ -68,6 +100,11 @@ type SpecMeta struct {
 
 // NewRecord builds a record for raw (the source bytes exactly as read) and its
 // parsed document. Callers set Name, Source, ETag and FetchedAt.
+//
+// The catalog is derived with the analyzer's own functions rather than a second
+// implementation of the same rules: a discovery answer read back from the
+// catalog must equal the answer the analyzer produced from the document, and two
+// derivations would eventually disagree.
 func NewRecord(doc *openapi3.T, raw []byte) Record {
 	sum := sha256.Sum256(raw)
 	rec := Record{
@@ -83,132 +120,224 @@ func NewRecord(doc *openapi3.T, raw []byte) Record {
 	}
 	rec.Endpoints = endpointsFromDoc(doc)
 	rec.Schemas = schemasFromDoc(doc)
-	rec.Tags = tagsFromEndpoints(rec.Endpoints)
+	rec.Tags = tagsFromDoc(doc)
 	return rec
 }
 
-// endpointsFromDoc walks the same method set the loader counts, so the stored
-// endpoint_count agrees with what fetch/validate reported before the store.
+// reparse turns a stored document back into the record its catalog is derived
+// from. It is what the v1 migration runs, and it normalizes exactly like the
+// indexer so an upgraded store's catalog equals a fresh reindex's.
+func reparse(name string, blob []byte) (Record, error) {
+	raw, err := decompress(blob)
+	if err != nil {
+		return Record{}, err
+	}
+	doc, err := loader.ParseDocument(raw)
+	if err != nil {
+		return Record{}, err
+	}
+	loader.PrepareDocument(doc)
+	rec := NewRecord(doc, raw)
+	rec.Name = name
+	return rec, nil
+}
+
+// endpointsFromDoc walks the operations the analyzer lists, which is the same set
+// list_endpoints reports (that is what makes the stored endpoint_count agree with
+// the listing), and attaches the names search_spec matches on.
 func endpointsFromDoc(doc *openapi3.T) []Endpoint {
-	if doc.Paths == nil {
+	summaries := analyzer.ListEndpoints(doc, analyzer.ListFilter{})
+	if len(summaries) == 0 {
 		return nil
 	}
-	var out []Endpoint
+	fields := searchFields(doc)
+	out := make([]Endpoint, 0, len(summaries))
+	for _, summary := range summaries {
+		ep := Endpoint{
+			Method:      summary.Method,
+			Path:        summary.Path,
+			Summary:     summary.Summary,
+			Description: summary.Description,
+			Tags:        summary.Tags,
+			Deprecated:  summary.Deprecated,
+		}
+		if names, ok := fields[summary.Method+" "+summary.Path]; ok {
+			ep.OperationID = names.operationID
+			ep.ParameterNames = names.byCategory[fieldParameter]
+			ep.RequestBodyFields = names.byCategory[fieldRequestBody]
+			ep.ResponseBodyFields = names.byCategory[fieldResponseBody]
+		}
+		out = append(out, ep)
+	}
+	return out
+}
+
+// operationCatalog is everything the catalog records about one operation beyond
+// what EndpointSummary carries.
+type operationCatalog struct {
+	operationID string
+	byCategory  map[string][]string
+}
+
+// searchFields collects the operation id and the names search_spec matches on,
+// per operation. The names mirror analyzer.matchScore: operation parameters, plus
+// the top-level properties of each request and response media schema with one
+// array level unwrapped — exactly the places the document-parsed search looked
+// at, so nested model properties stay unmatchable, as before.
+func searchFields(doc *openapi3.T) map[string]operationCatalog {
+	out := make(map[string]operationCatalog)
+	if doc == nil || doc.Paths == nil {
+		return out
+	}
 	for path, item := range doc.Paths.Map() {
 		if item == nil {
 			continue
 		}
-		add := func(method string, op *openapi3.Operation) {
+		for method, op := range map[string]*openapi3.Operation{
+			"GET":     item.Get,
+			"POST":    item.Post,
+			"PUT":     item.Put,
+			"DELETE":  item.Delete,
+			"PATCH":   item.Patch,
+			"HEAD":    item.Head,
+			"OPTIONS": item.Options,
+		} {
 			if op == nil {
-				return
-			}
-			out = append(out, Endpoint{
-				Method:     method,
-				Path:       path,
-				Summary:    op.Summary,
-				Tags:       append([]string(nil), op.Tags...),
-				Deprecated: op.Deprecated,
-			})
-		}
-		add("GET", item.Get)
-		add("POST", item.Post)
-		add("PUT", item.Put)
-		add("DELETE", item.Delete)
-		add("PATCH", item.Patch)
-		add("HEAD", item.Head)
-		add("OPTIONS", item.Options)
-		add("TRACE", item.Trace)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Path != out[j].Path {
-			return out[i].Path < out[j].Path
-		}
-		return out[i].Method < out[j].Method
-	})
-	return out
-}
-
-func tagsFromEndpoints(endpoints []Endpoint) []Tag {
-	counts := make(map[string]int)
-	for _, ep := range endpoints {
-		for _, tag := range ep.Tags {
-			if tag == "" {
 				continue
 			}
-			counts[tag]++
+			out[method+" "+path] = operationCatalog{
+				operationID: op.OperationID,
+				byCategory: map[string][]string{
+					fieldParameter:    parameterNames(op),
+					fieldRequestBody:  requestBodyFields(op),
+					fieldResponseBody: responseBodyFields(op),
+				},
+			}
 		}
 	}
-	tags := make([]Tag, 0, len(counts))
-	for name, n := range counts {
-		tags = append(tags, Tag{Name: name, EndpointCount: n})
-	}
-	sort.Slice(tags, func(i, j int) bool { return tags[i].Name < tags[j].Name })
-	return tags
-}
-
-func schemasFromDoc(doc *openapi3.T) []Schema {
-	if doc.Components == nil || doc.Components.Schemas == nil {
-		return nil
-	}
-	usage := schemaUsage(doc)
-	out := make([]Schema, 0, len(doc.Components.Schemas))
-	for name, ref := range doc.Components.Schemas {
-		fields := 0
-		if ref != nil && ref.Value != nil {
-			fields = len(ref.Value.Properties)
-		}
-		out = append(out, Schema{Name: name, FieldCount: fields, UsageCount: usage[name]})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
-// schemaUsage counts how often each component schema is referenced. It scans
-// the marshalled document for "#/components/schemas/<name>" pointers, which is
-// cheap next to the parse that just happened and covers refs from paths,
-// parameters, responses and other schemas alike.
-func schemaUsage(doc *openapi3.T) map[string]int {
-	usage := make(map[string]int)
-	blob, err := json.Marshal(doc)
-	if err != nil {
-		return usage
+// parameterNames lists the operation's own parameter names.
+func parameterNames(op *openapi3.Operation) []string {
+	var names []string
+	for _, ref := range op.Parameters {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		names = append(names, ref.Value.Name)
 	}
-	const prefix = "#/components/schemas/"
-	for idx := 0; ; {
-		found := bytes.Index(blob[idx:], []byte(prefix))
-		if found < 0 {
-			return usage
-		}
-		start := idx + found + len(prefix)
-		end := start
-		for end < len(blob) && isSchemaNameByte(blob[end]) {
-			end++
-		}
-		if end > start {
-			usage[string(blob[start:end])]++
-		}
-		idx = start
-	}
+	return sortedUnique(names)
 }
 
-func isSchemaNameByte(b byte) bool {
-	switch {
-	case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
-		return true
-	case b == '_', b == '-', b == '.':
-		return true
+// requestBodyFields lists the top-level property names of every request media
+// schema, unwrapping one array level.
+func requestBodyFields(op *openapi3.Operation) []string {
+	if op.RequestBody == nil || op.RequestBody.Value == nil {
+		return nil
 	}
-	return false
-}
-
-// tagList renders endpoint tags for the tags column: a comma separated list, so
-// a discovery query can match one tag with a LIKE without a join per endpoint.
-func tagList(tags []string) string {
-	cleaned := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		if tag = strings.TrimSpace(tag); tag != "" {
-			cleaned = append(cleaned, tag)
+	var names []string
+	for _, media := range op.RequestBody.Value.Content {
+		if media != nil {
+			names = append(names, schemaFieldNames(media.Schema)...)
 		}
 	}
-	return strings.Join(cleaned, ",")
+	return sortedUnique(names)
+}
+
+// responseBodyFields lists the top-level property names of every response media
+// schema, unwrapping one array level.
+func responseBodyFields(op *openapi3.Operation) []string {
+	if op.Responses == nil {
+		return nil
+	}
+	var names []string
+	for _, ref := range op.Responses.Map() {
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		for _, media := range ref.Value.Content {
+			if media != nil {
+				names = append(names, schemaFieldNames(media.Schema)...)
+			}
+		}
+	}
+	return sortedUnique(names)
+}
+
+// schemaFieldNames returns the property names of a schema and of its array items,
+// one level deep, which is how analyzer.matchSchemaProperties matches.
+func schemaFieldNames(ref *openapi3.SchemaRef) []string {
+	if ref == nil || ref.Value == nil {
+		return nil
+	}
+	schema := ref.Value
+	var names []string
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	if schema.Items != nil && schema.Items.Value != nil {
+		for name := range schema.Items.Value.Properties {
+			names = append(names, name)
+		}
+	}
+	return sortedUnique(names)
+}
+
+// schemasFromDoc records every component schema the way list_schemas reports it,
+// including the endpoint-usage count and the description.
+func schemasFromDoc(doc *openapi3.T) []Schema {
+	infos := analyzer.ListSchemas(doc, "")
+	if len(infos) == 0 {
+		return nil
+	}
+	out := make([]Schema, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, Schema{
+			Name:        info.Name,
+			FieldCount:  info.FieldCount,
+			UsedBy:      info.UsedBy,
+			Description: info.Description,
+		})
+	}
+	return out
+}
+
+// tagsFromDoc records the tag analysis the way analyze_tags reports it, including
+// the "untagged" bucket and the declared descriptions.
+func tagsFromDoc(doc *openapi3.T) []Tag {
+	summaries := analyzer.AnalyzeTags(doc)
+	if len(summaries) == 0 {
+		return nil
+	}
+	out := make([]Tag, 0, len(summaries))
+	for _, summary := range summaries {
+		breakdown := make(map[string]int, len(summary.MethodBreakdown))
+		for method, count := range summary.MethodBreakdown {
+			breakdown[method] = count
+		}
+		out = append(out, Tag{
+			Name:            summary.Name,
+			Description:     summary.Description,
+			EndpointCount:   summary.EndpointCount,
+			MethodBreakdown: breakdown,
+		})
+	}
+	return out
+}
+
+// sortedUnique returns values sorted and deduplicated, so the catalog rows do not
+// depend on map iteration order.
+func sortedUnique(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	sort.Strings(values)
+	out := values[:0:0]
+	for i, value := range values {
+		if i == 0 || value != values[i-1] {
+			out = append(out, value)
+		}
+	}
+	return out
 }

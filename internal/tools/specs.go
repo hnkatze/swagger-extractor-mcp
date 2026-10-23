@@ -254,7 +254,12 @@ func (s *specSource) entry(name string) (*cachedSpec, error) {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, specErr(codeSpecNotFound, "%v", err)
 		}
-		return nil, specErr(codeStoreError, "cannot read spec %q: %v", name, err)
+		// A detail tool is the only thing that needs the document, so a document
+		// that cannot be read must not read as a broken store: discovery still
+		// answers from the catalog, and one command rewrites the stored copy.
+		return nil, specErr(codeStoreError,
+			"the stored document of spec %q cannot be read (%v); the discovery tools still answer from the catalog, and `swagger-mcp index --refresh <source>` rewrites the stored copy (spec_status prints the exact command)",
+			name, err)
 	}
 
 	entry := &cachedSpec{name: rec.Name, sha: rec.SHA256, raw: rec.Document}
@@ -339,6 +344,77 @@ func (e *cachedSpec) storedDocument() (*openapi3.T, error) {
 	}
 	e.verbatim = doc
 	return doc, nil
+}
+
+// --- catalog queries (S9) ---
+
+// endpoints answers list_endpoints from the catalog, so a listing never
+// decompresses or parses the stored document.
+func (s *specSource) endpoints(name string, filter store.EndpointFilter, limit, offset int) ([]store.Endpoint, int, error) {
+	st, err := s.open()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, total, err := st.Endpoints(name, filter, limit, offset)
+	if err != nil {
+		return nil, 0, s.catalogError("endpoints", name, err)
+	}
+	return rows, total, nil
+}
+
+// search answers search_spec from the catalog, ranking with the same scores the
+// analyzer uses on a parsed document.
+func (s *specSource) search(name, query string, limit, offset int) ([]store.Endpoint, int, error) {
+	st, err := s.open()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, total, err := st.SearchEndpoints(name, query, limit, offset)
+	if err != nil {
+		return nil, 0, s.catalogError("search matches", name, err)
+	}
+	return rows, total, nil
+}
+
+// schemas answers list_schemas from the catalog.
+func (s *specSource) schemas(name, filter string, limit, offset int) ([]store.Schema, int, error) {
+	st, err := s.open()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, total, err := st.Schemas(name, filter, limit, offset)
+	if err != nil {
+		return nil, 0, s.catalogError("schemas", name, err)
+	}
+	return rows, total, nil
+}
+
+// tags answers analyze_tags from the catalog.
+func (s *specSource) tags(name string) ([]store.Tag, error) {
+	st, err := s.open()
+	if err != nil {
+		return nil, err
+	}
+	tags, err := st.Tags(name)
+	if err != nil {
+		return nil, s.catalogError("tags", name, err)
+	}
+	return tags, nil
+}
+
+// catalogError turns a catalog query failure into the tool error a caller can act
+// on. An incomplete catalog is the only one with a fix, so it names it: the
+// alternative is answering with rows that are missing.
+func (s *specSource) catalogError(what, name string, err error) error {
+	if errors.Is(err, store.ErrNotFound) {
+		return specErr(codeSpecNotFound, "%v", err)
+	}
+	if errors.Is(err, store.ErrCatalogIncomplete) {
+		return specErr(codeStoreError,
+			"the discovery catalog of spec %q was never built from its stored document, so this answer would be missing rows: run %s to rebuild it (upgrading an older store does this automatically)",
+			name, indexCommand)
+	}
+	return specErr(codeStoreError, "cannot read the %s of spec %q: %v", what, name, err)
 }
 
 // SpecStatusReport is what spec_status reports for one indexed spec: the store's
