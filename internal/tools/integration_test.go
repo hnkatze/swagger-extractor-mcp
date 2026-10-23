@@ -4,15 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
-
-	"github.com/hnkatze/swagger-mcp-go/internal/config"
 )
 
 // fixtureResource describes one REST resource in the generated spec. Each
@@ -201,48 +197,37 @@ func buildFixtureSpec() []byte {
 	return out
 }
 
-// newSpecServer serves the fixture spec locally. Callers must defer Close.
-func newSpecServer() *httptest.Server {
-	spec := buildFixtureSpec()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(spec)
-	}))
+// indexFixture indexes the fixture spec into the current test project's store,
+// exactly as `swagger-mcp index` would (S3), so these tests query the same local
+// index a user does.
+func indexFixture(t *testing.T) {
+	t.Helper()
+	indexSpec(t, "fixture", buildFixtureSpec())
 }
 
-// newTestRegistry builds a Registry with default settings and an isolated
-// disk cache, so tests never touch the developer's ~/.swagger-mcp/cache.
-func newTestRegistry(cacheDir string) *Registry {
-	cfg := config.Default()
-	cfg.CacheDir = cacheDir
-	cfg.FetchTimeout = 10 * time.Second
-	return New(cfg)
-}
-
-// TestIntegration_FetchSpec tests fetching the fixture spec.
-func TestIntegration_FetchSpec(t *testing.T) {
+// TestIntegration_SpecStatus reports the stored spec without fetching it: the
+// summary metadata fetch_spec used to print now comes from the store (S4).
+func TestIntegration_SpecStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newSpecServer()
-	defer srv.Close()
+	projectDir(t)
+	indexFixture(t)
+	r := newRegistry(t)
 
-	r := newTestRegistry(t.TempDir())
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	req := makeRequest(map[string]interface{}{"url": srv.URL})
-	result, err := r.handleFetchSpec(ctx, req)
+	result, err := r.handleSpecStatus(context.Background(), makeRequest(map[string]interface{}{}))
 	if err != nil {
-		t.Fatalf("handleFetchSpec error: %v", err)
+		t.Fatalf("handleSpecStatus error: %v", err)
 	}
 
 	text := extractText(result)
-	t.Logf("fetch_spec output (%d chars):\n%s", len(text), text)
+	t.Logf("spec_status output (%d chars):\n%s", len(text), text)
 
-	if !strings.Contains(text, "endpoint_count") && !strings.Contains(text, "title") {
-		t.Error("expected spec summary in output")
+	for _, want := range []string{"endpoint_count", "title", "fetched_at"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected %q in the status output", want)
+		}
 	}
 }
 
@@ -252,15 +237,14 @@ func TestIntegration_ListEndpoints_NoFilter(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newSpecServer()
-	defer srv.Close()
-
-	r := newTestRegistry(t.TempDir())
+	projectDir(t)
+	indexFixture(t)
+	r := newRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// No filters, no explicit format → should use TOON (config default) with limit 50
-	req := makeRequest(map[string]interface{}{"url": srv.URL})
+	req := makeRequest(map[string]interface{}{})
 	result, err := r.handleListEndpoints(ctx, req)
 	if err != nil {
 		t.Fatalf("handleListEndpoints error: %v", err)
@@ -284,15 +268,14 @@ func TestIntegration_ListEndpoints_WithTag(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newSpecServer()
-	defer srv.Close()
-
-	r := newTestRegistry(t.TempDir())
+	projectDir(t)
+	indexFixture(t)
+	r := newRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// First get tags
-	tagReq := makeRequest(map[string]interface{}{"url": srv.URL})
+	tagReq := makeRequest(map[string]interface{}{})
 	tagResult, err := r.handleAnalyzeTags(ctx, tagReq)
 	if err != nil {
 		t.Fatalf("handleAnalyzeTags error: %v", err)
@@ -303,7 +286,6 @@ func TestIntegration_ListEndpoints_WithTag(t *testing.T) {
 
 	// Now list with a tag filter — "Auth" is guaranteed by buildFixtureSpec
 	req := makeRequest(map[string]interface{}{
-		"url": srv.URL,
 		"tag": "Auth",
 	})
 	result, err := r.handleListEndpoints(ctx, req)
@@ -321,15 +303,13 @@ func TestIntegration_ListEndpoints_JSON(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newSpecServer()
-	defer srv.Close()
-
-	r := newTestRegistry(t.TempDir())
+	projectDir(t)
+	indexFixture(t)
+	r := newRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	req := makeRequest(map[string]interface{}{
-		"url":    srv.URL,
 		"format": "json",
 		"limit":  "5",
 	})
@@ -355,15 +335,13 @@ func TestIntegration_ListEndpoints_Unlimited(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newSpecServer()
-	defer srv.Close()
-
-	r := newTestRegistry(t.TempDir())
+	projectDir(t)
+	indexFixture(t)
+	r := newRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	req := makeRequest(map[string]interface{}{
-		"url":   srv.URL,
 		"limit": "0",
 	})
 	result, err := r.handleListEndpoints(ctx, req)
@@ -386,15 +364,13 @@ func TestIntegration_SearchSpec(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newSpecServer()
-	defer srv.Close()
-
-	r := newTestRegistry(t.TempDir())
+	projectDir(t)
+	indexFixture(t)
+	r := newRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	req := makeRequest(map[string]interface{}{
-		"url":   srv.URL,
 		"query": "product",
 	})
 	result, err := r.handleSearchSpec(ctx, req)
@@ -412,16 +388,14 @@ func TestIntegration_TokenComparison(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	srv := newSpecServer()
-	defer srv.Close()
-
-	r := newTestRegistry(t.TempDir())
+	projectDir(t)
+	indexFixture(t)
+	r := newRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// "Old" style: JSON, no limit
 	oldReq := makeRequest(map[string]interface{}{
-		"url":    srv.URL,
 		"format": "json",
 		"limit":  "0",
 	})
@@ -432,9 +406,7 @@ func TestIntegration_TokenComparison(t *testing.T) {
 	oldText := extractText(oldResult)
 
 	// "New" style: TOON (default), limit 50
-	newReq := makeRequest(map[string]interface{}{
-		"url": srv.URL,
-	})
+	newReq := makeRequest(map[string]interface{}{})
 	newResult, err := r.handleListEndpoints(ctx, newReq)
 	if err != nil {
 		t.Fatalf("new-style error: %v", err)

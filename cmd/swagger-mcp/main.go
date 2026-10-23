@@ -42,9 +42,13 @@ func serve() {
 	)
 
 	registry := tools.New(cfg)
+	defer registry.Close()
 	registry.Register(mcpServer)
 
 	errLogger := log.New(os.Stderr, "[swagger-mcp] ", log.LstdFlags)
+	// Say which project's index this session answers from, so a user who ran the
+	// server in the wrong directory can see it instead of guessing.
+	errLogger.Printf("store: %s", registry.StorePath())
 
 	if err := server.ServeStdio(mcpServer, server.WithErrorLogger(errLogger)); err != nil {
 		errLogger.Fatalf("server error: %v", err)

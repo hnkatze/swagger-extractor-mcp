@@ -5,10 +5,29 @@ document into context. It is built to minimize tokens: responses are compact
 (TOON), lists are auto-limited, and repeated schemas are de-duplicated. Follow
 the workflow below to stay efficient.
 
+Every answer comes from the project's **local spec index** — a `swa-mcp/` store
+written by the CLI, never fetched from the network. Index a spec once, in the
+project:
+
+```
+swagger-mcp index <url|file>...     # writes ./swa-mcp/swa-mcp.db
+swagger-mcp index --refresh <src>   # re-read and rewrite the stored copy
+```
+
+Then every tool answers from that store. If nothing is indexed, the tools tell
+you to run `swagger-mcp index`.
+
+## Addressing the spec (`spec`)
+
+- One indexed spec: omit `spec`, the tools use it automatically.
+- Several indexed specs: pass `spec=<name>`, the name the indexer stored (by
+  default the file or URL base name, e.g. `petstore`).
+- `spec_status` shows what is indexed: name, source, etag, sha256, fetch time and
+  counts. Start there when a call reports that several specs are indexed.
+
 ## Workflow
 
-0. `fetch_spec` — once per spec. It returns title/version/counts **and makes this
-   the session default**, so every later call can omit `url` entirely.
+0. `spec_status` — which specs are indexed, their source and fetch time.
 1. `analyze_tags` — maps the API into tags with endpoint counts so you know where
    to look.
 2. `list_endpoints` — filter by `tag` (preferred), `method`, `path_pattern`, or
@@ -34,9 +53,11 @@ format, apiKey header name or OAuth2/OIDC URLs, and how many endpoints use it.
 Call it before writing client code. A requirement list is an OR — `Bearer OR
 ApiKey` means either one works, not both.
 
-`validate_spec` reports what is wrong with a spec (VALID/INVALID plus
+`validate_spec` reports what is wrong with an indexed spec (VALID/INVALID plus
 violations). Use it when you are authoring or reviewing a spec, not when
 consuming one.
+
+`diff_endpoints` compares two indexed specs (`spec_old`, `spec_new`).
 
 ## Reading the output (TOON)
 
@@ -52,14 +73,14 @@ consuming one.
 
 ## Token-efficiency rules
 
-- Omit `url`. After the first `fetch_spec` every call inherits the session
-  default; repeating a 70-character URL on every call is pure waste.
+- Omit `spec` when the project indexes one spec. Repeating a spec name on every
+  call is pure waste, and on a single-spec project it is never needed.
 - Filter before listing. `analyze_tags` → filtered `list_endpoints` beats one
   unfiltered dump by ~30×.
 - Page instead of raising the limit. `limit`/`offset` beats `limit=0` on a large
   API, and the header tells you the next offset.
-- Reuse the cache. Don't re-`fetch_spec` a URL you already loaded; check
-  `spec_status` if unsure.
+- Trust the store. Queries never touch the network, so there is nothing to
+  re-fetch and no cache to warm; repeated calls are cheap.
 - Default format is TOON (compact). Only pass `format=json` when a tool consumer
   needs structured JSON.
 - Lower `resolve_depth` (or 0) when you only need field names, not nested shapes.
@@ -69,7 +90,7 @@ consuming one.
 
 **"What can this API do with employees?"**
 ```
-fetch_spec(url)                            → summary + sets the session default
+spec_status()                              → which spec is indexed, and its counts
 analyze_tags()                             → see an "Employee" tag, 40 endpoints
 list_endpoints(tag="Employee")             → the 40 endpoints, one line each
 get_endpoint("POST", "/api/v1/Employee")   → full request/response shape
@@ -94,9 +115,10 @@ security_schemes()                         → what to send: Bearer OR ApiKey, a
 generate_types(tag="Orders", language="typescript")   → every schema that tag uses, sorted
 ```
 
-**"Did the spec change since last time?"**
+**"Is the indexed copy current?"**
 ```
-refresh_spec()   → reports changed/unchanged via fingerprint, plus a fresh summary
+spec_status()   → source, etag, fetch time and age; `swagger-mcp index --refresh <src>`
+                  is how a user updates it, never a query
 ```
 
 ## Anti-patterns
@@ -104,6 +126,6 @@ refresh_spec()   → reports changed/unchanged via fingerprint, plus a fresh sum
 - Don't `list_endpoints` without filters on a large API — it wastes tokens.
 - Don't `get_endpoint` every endpoint to "look around" — narrow with tags/search.
 - Don't expand every `$ref(Name)` — only the ones whose fields you actually need.
-- Don't re-fetch a cached spec — use `spec_status` to check first.
+- Don't guess a spec name — `spec_status` lists the indexed names.
 - Don't raise `resolve_depth` to 10 by reflex — the default of 3 is enough for
   most models, and the dedup keeps shared schemas from repeating anyway.

@@ -2,10 +2,7 @@ package tools
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -115,15 +112,15 @@ func TestGetLimit_NegativeFallsToDefault(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetStringArg_Present(t *testing.T) {
-	req := makeRequest(map[string]interface{}{"url": "https://example.com"})
-	if got := getStringArg(req, "url"); got != "https://example.com" {
-		t.Errorf("getStringArg = %q, want https://example.com", got)
+	req := makeRequest(map[string]interface{}{"spec": "petstore"})
+	if got := getStringArg(req, "spec"); got != "petstore" {
+		t.Errorf("getStringArg = %q, want petstore", got)
 	}
 }
 
 func TestGetStringArg_Missing(t *testing.T) {
 	req := makeRequest(map[string]interface{}{})
-	if got := getStringArg(req, "url"); got != "" {
+	if got := getStringArg(req, "spec"); got != "" {
 		t.Errorf("getStringArg = %q, want empty", got)
 	}
 }
@@ -151,8 +148,8 @@ func TestNew_StoresConfig(t *testing.T) {
 	if r.cfg.DefaultLimit != 25 {
 		t.Errorf("cfg.DefaultLimit = %d, want 25", r.cfg.DefaultLimit)
 	}
-	if r.loader == nil {
-		t.Error("loader should not be nil")
+	if r.specs == nil {
+		t.Error("specs should not be nil")
 	}
 }
 
@@ -195,7 +192,7 @@ func TestUsageGuideTool_NoParams(t *testing.T) {
 }
 
 func TestHandleUsageGuide_ReturnsEmbeddedGuide(t *testing.T) {
-	r := New(config.Default())
+	r := newRegistry(t)
 	result, err := r.handleUsageGuide(context.Background(), makeRequest(nil))
 	if err != nil {
 		t.Fatalf("handleUsageGuide error: %v", err)
@@ -205,9 +202,15 @@ func TestHandleUsageGuide_ReturnsEmbeddedGuide(t *testing.T) {
 		t.Fatal("usage guide should not be empty")
 	}
 	// Spot-check that the guide carries its key signals for the LLM.
-	for _, want := range []string{"analyze_tags", "$ref(", "resolve_depth", "Anti-patterns"} {
+	for _, want := range []string{"analyze_tags", "$ref(", "resolve_depth", "Anti-patterns", "swagger-mcp index"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("usage guide should mention %q", want)
+		}
+	}
+	// The guide must not teach the removed fetch path (S4a).
+	for _, gone := range []string{"fetch_spec", "refresh_spec", "`url`", "url)"} {
+		if strings.Contains(text, gone) {
+			t.Errorf("usage guide still mentions %q", gone)
 		}
 	}
 }
@@ -317,7 +320,7 @@ func TestToolParamTypes_AreNotAllStrings(t *testing.T) {
 		{listEndpointsTool(), "limit", "number"},
 		{searchSpecTool(), "limit", "number"},
 		{getEndpointTool(), "resolve_depth", "number"},
-		{fetchSpecTool(), "refresh", "boolean"},
+		{listEndpointsTool(), "deprecated", "boolean"},
 	}
 
 	for _, tc := range cases {
@@ -350,7 +353,7 @@ func paramSchemaType(t *testing.T, tool mcp.Tool, param string) string {
 
 func TestListSchemasTool_HasParams(t *testing.T) {
 	tool := listSchemasTool()
-	assertToolHasParam(t, tool, "url")
+	assertToolHasParam(t, tool, "spec")
 	assertToolHasParam(t, tool, "filter")
 	if got := paramSchemaType(t, tool, "limit"); got != "number" {
 		t.Errorf("limit declared type = %q, want number", got)
@@ -409,143 +412,31 @@ func TestGetOptionalBoolArg(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Session default URL (S4)
+// Tool surface (S4a): a spec name addresses a query, nothing else
 // ---------------------------------------------------------------------------
-
-func TestNew_SeedsActiveURLFromConfig(t *testing.T) {
-	cfg := config.Default()
-	cfg.DefaultURL = "https://example.com/seed.json"
-	r := New(cfg)
-	if got := r.activeURL(); got != cfg.DefaultURL {
-		t.Errorf("activeURL = %q, want %q", got, cfg.DefaultURL)
-	}
-}
-
-func TestResolveURL_ExplicitBeatsActive(t *testing.T) {
-	r := New(config.Default())
-	r.setActiveURL("https://example.com/active.json")
-	req := makeRequest(map[string]interface{}{"url": "https://example.com/explicit.json"})
-	if got := r.resolveURL(req); got != "https://example.com/explicit.json" {
-		t.Errorf("resolveURL = %q, want explicit url", got)
-	}
-}
-
-func TestResolveURL_FallsBackToActive(t *testing.T) {
-	r := New(config.Default())
-	r.setActiveURL("https://example.com/active.json")
-	if got := r.resolveURL(makeRequest(map[string]interface{}{})); got != "https://example.com/active.json" {
-		t.Errorf("resolveURL = %q, want active url", got)
-	}
-}
-
-func TestResolveURL_NeitherSetIsEmpty(t *testing.T) {
-	r := New(config.Default())
-	if got := r.resolveURL(makeRequest(map[string]interface{}{})); got != "" {
-		t.Errorf("resolveURL = %q, want empty", got)
-	}
-}
-
-func TestHandlers_NoURLErrorNamesFetchSpec(t *testing.T) {
-	r := New(config.Default())
-	ctx := context.Background()
-	handlers := map[string]func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error){
-		"fetch_spec":     r.handleFetchSpec,
-		"list_endpoints": r.handleListEndpoints,
-		"get_endpoint":   r.handleGetEndpoint,
-		"get_schema":     r.handleGetSchema,
-		"search_spec":    r.handleSearchSpec,
-		"list_schemas":   r.handleListSchemas,
-		"analyze_tags":   r.handleAnalyzeTags,
-		"spec_status":    r.handleSpecStatus,
-		"refresh_spec":   r.handleRefreshSpec,
-		"generate_types": r.handleGenerateTypes,
-	}
-	for name, h := range handlers {
-		t.Run(name, func(t *testing.T) {
-			result, err := h(ctx, makeRequest(map[string]interface{}{}))
-			if err != nil {
-				t.Fatalf("handler error: %v", err)
-			}
-			if !result.IsError {
-				t.Fatal("expected a tool error when no url is available")
-			}
-			text := extractText(result)
-			for _, want := range []string{"url", "fetch_spec"} {
-				if !strings.Contains(text, want) {
-					t.Errorf("error %q should mention %q", text, want)
-				}
-			}
-		})
-	}
-}
-
-func TestURLParam_NotRequired(t *testing.T) {
-	tools := []mcp.Tool{
-		fetchSpecTool(), listEndpointsTool(), getEndpointTool(), getSchemaTool(),
-		searchSpecTool(), listSchemasTool(), analyzeTagsTool(), specStatusTool(),
-		refreshSpecTool(), generateTypesTool(),
-	}
-	for _, tool := range tools {
-		for _, req := range tool.InputSchema.Required {
-			if req == "url" {
-				t.Errorf("tool %q still requires url", tool.Name)
-			}
-		}
-	}
-}
-
-func TestActiveURL_ConcurrentAccess(t *testing.T) {
-	r := New(config.Default())
-	req := makeRequest(map[string]interface{}{})
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 200; j++ {
-				r.setActiveURL("https://example.com/spec.json")
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 200; j++ {
-				_ = r.resolveURL(req)
-				_ = r.activeURL()
-			}
-		}()
-	}
-	wg.Wait()
-	if got := r.resolveURL(req); got != "https://example.com/spec.json" {
-		t.Errorf("resolveURL = %q after concurrent writes", got)
-	}
-}
 
 func TestSecuritySchemesTool_HasParams(t *testing.T) {
 	tool := securitySchemesTool()
-	assertToolHasParam(t, tool, "url")
+	assertToolHasParam(t, tool, "spec")
 	assertToolHasParam(t, tool, "format")
 	for _, req := range tool.InputSchema.Required {
-		if req == "url" {
-			t.Error("security_schemes must not require url")
+		if req == "spec" {
+			t.Error("security_schemes must not require spec")
 		}
 	}
 }
 
-// tagSpecServer serves a tiny spec: tag "pets" uses Pet, "other" uses Thing,
+// tagSpecFixture indexes a tiny spec: tag "pets" uses Pet, "other" uses Thing,
 // and "bare" has an endpoint with no component refs.
-func tagSpecServer(t *testing.T) string {
+func tagSpecFixture(t *testing.T) {
 	t.Helper()
 	const spec = `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"paths":{
 "/pets":{"get":{"tags":["pets"],"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Pet"}}}}}}},
 "/things":{"get":{"tags":["other"],"responses":{"200":{"description":"ok","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Thing"}}}}}}},
 "/bare":{"get":{"tags":["bare"],"responses":{"204":{"description":"none"}}}}},
 "components":{"schemas":{"Pet":{"type":"object","properties":{"name":{"type":"string"}}},"Thing":{"type":"object","properties":{"id":{"type":"string"}}}}}}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(spec))
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
+	projectDir(t)
+	indexSpec(t, "tags", []byte(spec))
 }
 
 func TestGenerateTypesTool_HasTagParamAndPrecedence(t *testing.T) {
@@ -562,11 +453,11 @@ func TestGenerateTypesTool_HasTagParamAndPrecedence(t *testing.T) {
 }
 
 func TestHandleGenerateTypes_TagMode(t *testing.T) {
-	r := New(config.Default())
-	url := tagSpecServer(t)
+	tagSpecFixture(t)
+	r := newRegistry(t)
 	for _, lang := range []string{"typescript", "go"} {
 		res, err := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
-			"url": url, "tag": "pets", "language": lang,
+			"tag": "pets", "language": lang,
 		}))
 		if err != nil || res.IsError {
 			t.Fatalf("%s: unexpected failure: %v %v", lang, err, res)
@@ -579,18 +470,18 @@ func TestHandleGenerateTypes_TagMode(t *testing.T) {
 }
 
 func TestHandleGenerateTypes_TagWinsOverSchema(t *testing.T) {
-	r := New(config.Default())
-	url := tagSpecServer(t)
+	tagSpecFixture(t)
+	r := newRegistry(t)
 	// schema is valid but the tag matches nothing: the tag path must run and fail.
 	res, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
-		"url": url, "tag": "missing", "schema": "Pet",
+		"tag": "missing", "schema": "Pet",
 	}))
 	if !res.IsError || !strings.Contains(extractText(res), "missing") {
 		t.Fatalf("expected tag-mode error naming the tag, got %q", extractText(res))
 	}
 	// tag is valid and schema names a different schema: tag output wins.
 	res, _ = r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
-		"url": url, "tag": "pets", "schema": "Thing",
+		"tag": "pets", "schema": "Thing",
 	}))
 	text := extractText(res)
 	if res.IsError || !strings.Contains(text, "Pet") || strings.Contains(text, "Thing") {
@@ -599,10 +490,10 @@ func TestHandleGenerateTypes_TagWinsOverSchema(t *testing.T) {
 }
 
 func TestHandleGenerateTypes_TagErrorsAreDistinct(t *testing.T) {
-	r := New(config.Default())
-	url := tagSpecServer(t)
-	unknown, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{"url": url, "tag": "zzz"}))
-	bare, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{"url": url, "tag": "bare"}))
+	tagSpecFixture(t)
+	r := newRegistry(t)
+	unknown, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{"tag": "zzz"}))
+	bare, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{"tag": "bare"}))
 	if !unknown.IsError || !bare.IsError {
 		t.Fatal("both cases must be tool errors, not empty output")
 	}
@@ -615,9 +506,10 @@ func TestHandleGenerateTypes_TagErrorsAreDistinct(t *testing.T) {
 }
 
 func TestHandleGenerateTypes_TagModeJSONReportsCount(t *testing.T) {
-	r := New(config.Default())
+	tagSpecFixture(t)
+	r := newRegistry(t)
 	res, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
-		"url": tagSpecServer(t), "tag": "pets", "format": "json",
+		"tag": "pets", "format": "json",
 	}))
 	text := extractText(res)
 	if res.IsError || !strings.Contains(text, `"schema_count"`) || !strings.Contains(text, `"Pet"`) {
@@ -626,71 +518,35 @@ func TestHandleGenerateTypes_TagModeJSONReportsCount(t *testing.T) {
 }
 
 func TestHandleGenerateTypes_SchemaModeStillWorks(t *testing.T) {
-	r := New(config.Default())
+	tagSpecFixture(t)
+	r := newRegistry(t)
 	res, _ := r.handleGenerateTypes(context.Background(), makeRequest(map[string]interface{}{
-		"url": tagSpecServer(t), "schema": "Thing",
+		"schema": "Thing",
 	}))
 	if res.IsError || !strings.Contains(extractText(res), "Thing") {
 		t.Fatalf("schema mode regressed: %q", extractText(res))
 	}
 }
 
-// ---------------------------------------------------------------------------
-// progressCtx — fetch heartbeat plumbing (S7)
-// ---------------------------------------------------------------------------
-
-// Without a progress token the caller did not ask to be kept informed, so the
-// context must pass through untouched and no heartbeat goroutine may start.
-func TestProgressCtx_NoTokenIsUnchanged(t *testing.T) {
-	r := New(config.Default())
-	ctx := context.Background()
-
-	got := r.progressCtx(ctx, makeRequest(map[string]interface{}{}))
-
-	if got != ctx {
-		t.Error("progressCtx returned a different context without a progress token")
-	}
-}
-
-// A token alone is not enough: without the MCP server reachable from ctx there is
-// nobody to notify, so the context must still pass through untouched.
-func TestProgressCtx_NoServerIsUnchanged(t *testing.T) {
-	r := New(config.Default())
-	ctx := context.Background()
-	req := mcp.CallToolRequest{Params: mcp.CallToolParams{
-		Meta: &mcp.Meta{ProgressToken: "token-1"},
-	}}
-
-	got := r.progressCtx(ctx, req)
-
-	if got != ctx {
-		t.Error("progressCtx attached a heartbeat with no server in the context")
-	}
-}
-
 func TestValidateSpecTool_HasParams(t *testing.T) {
 	tool := validateSpecTool()
-	assertToolHasParam(t, tool, "url")
+	assertToolHasParam(t, tool, "spec")
 	assertToolHasParam(t, tool, "format")
 	for _, req := range tool.InputSchema.Required {
-		if req == "url" {
-			t.Error("validate_spec must not require url")
+		if req == "spec" {
+			t.Error("validate_spec must not require spec")
 		}
 	}
 }
 
 func TestHandleValidateSpec_LoadsWithViolations(t *testing.T) {
-	// No "openapi" field: the loader skips validation so this loads, but a
-	// strict validation pass reports it.
-	const spec = `{"info":{"title":"t","version":"1"},"paths":{}}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(spec))
-	}))
-	t.Cleanup(srv.Close)
+	// No "openapi" field: the loader relaxes validation so this still indexes,
+	// but a strict validation pass reports it.
+	projectDir(t)
+	indexSpec(t, "loose", []byte(`{"info":{"title":"t","version":"1"},"paths":{}}`))
+	r := newRegistry(t)
 
-	r := New(config.Default())
-	res, err := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{"url": srv.URL}))
+	res, err := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{}))
 	if err != nil || res.IsError {
 		t.Fatalf("report must be a normal result: %v %v", err, res)
 	}
@@ -699,24 +555,13 @@ func TestHandleValidateSpec_LoadsWithViolations(t *testing.T) {
 	}
 }
 
-func TestHandleValidateSpec_RequiresURL(t *testing.T) {
-	r := New(config.Default())
-	res, _ := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{}))
-	if !res.IsError || !strings.Contains(extractText(res), "fetch_spec") {
-		t.Fatalf("expected URL-required error, got %q", extractText(res))
-	}
-}
-
 func TestHandleValidateSpec_ReportsSpecTheLoaderRejects(t *testing.T) {
 	const spec = `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/pets/{id}":{"get":{"responses":{"200":{"description":"ok"}}}}}}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(spec))
-	}))
-	t.Cleanup(srv.Close)
+	projectDir(t)
+	indexSpec(t, "missing-param", []byte(spec))
+	r := newRegistry(t)
 
-	r := New(config.Default())
-	res, err := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{"url": srv.URL}))
+	res, err := r.handleValidateSpec(context.Background(), makeRequest(map[string]interface{}{}))
 	if err != nil || res.IsError {
 		t.Fatalf("report must be a normal result: %v %q", err, extractText(res))
 	}

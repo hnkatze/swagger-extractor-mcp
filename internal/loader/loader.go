@@ -382,6 +382,13 @@ func (l *Loader) LoadUnvalidated(ctx context.Context, rawURL string) (*openapi3.
 
 // LoadFromData parses raw bytes into an OpenAPI document.
 func (l *Loader) LoadFromData(data []byte) (*openapi3.T, error) {
+	return ParseDocument(data)
+}
+
+// ParseDocument parses raw bytes into an OpenAPI document. It reads no network
+// and no cache: a query hands it the bytes the store holds, so the same parse
+// rules apply whether a document arrived through the loader or the index.
+func ParseDocument(data []byte) (*openapi3.T, error) {
 	oaLoader := openapi3.NewLoader()
 	doc, err := oaLoader.LoadFromData(data)
 	if err != nil {
