@@ -80,6 +80,18 @@ and `formatter` operate on `*openapi3.T`; they survive intact. What changes is
 `internal/loader` (fetch → store) and the tool handlers' addressing (`url` →
 `spec`).
 
+**S9 — Discovery answers from the catalog, not from the document.** `list_specs`,
+`list_endpoints`, `list_schemas`, `analyze_tags` and `search_spec` must answer from
+the store's normalized tables (`endpoints`, `schemas`, `tags`), so a large spec is
+not decompressed and re-parsed to list or search it. Detail tools
+(`get_endpoint`, `get_schema`, `generate_types`, `diff_endpoints`,
+`security_schemes`, `validate_spec`) still read the stored document — that is what
+they are for. A document that cannot be parsed must therefore degrade detail
+tools only, never discovery. Required schema v2: the catalog gains what search
+needs (operation id, body field names); an existing v1 store is migrated
+automatically on the writable path and reports a clear, actionable error on the
+read path instead of answering with missing results.
+
 **Non-goals**: hosted multi-tenant service; authentication; embeddings/vector
 search; watching the filesystem for spec changes (an explicit reindex is enough
 until someone asks).
@@ -108,6 +120,7 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | T4 | S6 | done | (shipped with T3 in `8b76ed7`) |
 | T5 | S7 | done | `eb20fd7 docs: rewrite the README for the local index product` |
 | T6 | S1 | done | `d379c44 refactor(loader): delete the dead fetch path` |
+| T7 | S9 | in progress | `refactor(store): answer discovery from the catalog` |
 
 Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
 parity); slice 2 = `da8822b` (store-backed queries); slice 3 = `8b76ed7`
@@ -174,3 +187,10 @@ public hosting is explicitly not implied (S7b).
   orphaned.
 - Whole feature: 10 packages green with `CGO_ENABLED=0`, 13 tools, no query path
   can fetch.
+
+**L11** (user, verbatim): "si si vamos con eso pls, todo lo que requiera ahorita, y te desbloqueo algo, en railway solo vamos a tener el servicio puro, sin volumen, no es la idea tener una db en el servidor,"
+
+**L12** (author): reading of L11 — T7 (S9) proceeds now. The Railway note is a
+constraint for a later decision, recorded here so it is not lost: with no volume
+on the server there is no store to read, so a hosted mode could only work if the
+store or its documents arrive from the client per request. Not in scope today.
