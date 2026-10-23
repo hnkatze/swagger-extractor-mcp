@@ -102,12 +102,15 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 
 | ID | Spec | Route | Commit |
 |----|------|-------|--------|
-| T1 | S2,S3 | pending | `feat(store): sqlite store and index command` |
+| T1 | S2,S3 | done | `ba66e1e feat(store): sqlite spec index and the index command` |
 | T2 | S4 | pending | `feat(tools): resolve specs from the local store` |
 | T3 | S5 | pending | `feat(tools): list_specs and cross-spec search` |
 | T4 | S6 | pending | `feat(tools): report index staleness in spec_status` |
 | T5 | S7 | pending | `docs: local-index usage and distribution` |
 | T6 | S1 | pending | `test(store): prove queries never touch the network` |
+
+Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
+parity). Slice 2 starts at T2.
 
 Risk: item 1 (data) on T1 — a new on-disk format and a writer; item 2 (security)
 on T2 — dropping URL addressing removes the SSRF surface entirely, so the check is
