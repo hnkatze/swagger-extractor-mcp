@@ -92,6 +92,23 @@ needs (operation id, body field names); an existing v1 store is migrated
 automatically on the writable path and reports a clear, actionable error on the
 read path instead of answering with missing results.
 
+**S10 — Orphaned rows can be removed.** `swagger-mcp unindex <name>` deletes
+one indexed spec and its catalog rows, confirms what it removed, and errors
+clearly on an unknown name without touching anything else. Needed because a moved
+or renamed source file leaves a row nobody can use.
+
+**S11 — An unusable store explains the recovery.** When the store file cannot be
+opened or read (corrupt, truncated, not a database), the error names the store
+path and what to do about it instead of surfacing a raw driver message. A query
+must keep failing safely: it never rewrites or deletes the file.
+
+**S12 — The guide teaches the real workflow.** `usage_guide` (the embedded
+`llm_guide.md`) must describe how this MCP is used now, end to end: index first
+(the agent runs it itself when it has a shell), `list_specs`, `spec` addressing
+and `all_specs`, staleness, and an error→action table for the codes a caller can
+hit. Every tool in the registry must appear in it, and a test must fail when the
+guide and the tool inventory drift apart.
+
 **Non-goals**: hosted multi-tenant service; authentication; embeddings/vector
 search; watching the filesystem for spec changes (an explicit reindex is enough
 until someone asks).
@@ -121,6 +138,8 @@ Two shapes were considered. Chosen: **blob + normalized catalog**.
 | T5 | S7 | done | `eb20fd7 docs: rewrite the README for the local index product` |
 | T6 | S1 | done | `d379c44 refactor(loader): delete the dead fetch path` |
 | T7 | S9 | done | `87e2eff refactor(store): answer discovery from the catalog` |
+| T8 | S10,S11 | in progress | `feat(store): unindex and a recovery hint` |
+| T9 | S12 | in progress | `docs(guide): teach the real workflow` |
 
 Slice boundary: slice 1 = `ba66e1e` + `60e8a49` (store, index command, validation
 parity); slice 2 = `da8822b` (store-backed queries); slice 3 = `8b76ed7`
@@ -210,3 +229,10 @@ store or its documents arrive from the client per request. Not in scope today.
   published v0.8.0 README promised an install that could never work.
 - Released with T7 as v0.8.1 once pushed; the doc's follow-ups stay open:
   `unindex` for orphaned rows, a recovery hint for a corrupt SQLite file.
+
+**L14** (user, verbatim): "dale con eso resolvamos esas cosas, y que la tool de
+usage exponga el uso correcto del mcp"
+
+**L15** (author): reading of L14 — the follow-ups (unindex, recovery hint) and a
+real `usage_guide` are in scope; `index_spec` stays out because the user runs the
+agent locally with a shell (the guide now says so). Publishing stays parked.
